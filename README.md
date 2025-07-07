@@ -3,7 +3,7 @@
 源项目 [https://github.com/victorPKU/CycAssem]
 
 该仓库是对源项目进行了部分改善的版本，旨在通过并行化提升性能并引入多个自动化脚本提升效率。
-ps：俺已经走完了整体的流程，大家如果对于源项目有疑问，随时在issues里提问QaQ.
+ps：大家如果有任何问题，随时在issues里提问QaQ.
 
 ## 重写
 1. utility/targetframe.c:更改为python文件，替代之前导入frame.pdb的方式，只需要输入定义box1，box2的三个三维坐标即可对靶蛋白进行旋转。
