@@ -2,10 +2,11 @@
 
 源项目 [https://github.com/victorPKU/CycAssem]
 
-本仓库是一个对源项目进行部分重写及改善的版本，旨在通过并行化提升性能并引入多个自动化脚本提升效率。
+该仓库是对源项目进行了部分改善的版本，旨在通过并行化提升性能并引入多个自动化脚本提升效率。
+ps：俺已经走完了整体的流程，大家如果对于源项目有疑问，随时在issues里提问QaQ.
 
 ## 重写
-1. utility/targetframe.c:更改为python文件，替代之前导入frame.pdb的方式，只需要输入定义box1，box2的三个三维坐标即可。
+1. utility/targetframe.c:更改为python文件，替代之前导入frame.pdb的方式，只需要输入定义box1，box2的三个三维坐标即可对靶蛋白进行旋转。
 
 2. fraglink：对fraglinl.c进行了重写，改善了数据量过大时报错的问题。
 (1) 添加多进程并行，极大提升效率
@@ -21,5 +22,5 @@
 
 ## 新增
 
-1. 之前没有下载pdb的爬虫脚本，现已添加。
-2. 没有将pdb转换为fragments的脚本，现已添加。
+1. 下载下载pdb文件的爬虫脚本。
+2. 添加将pdb转换为fragments的脚本。
