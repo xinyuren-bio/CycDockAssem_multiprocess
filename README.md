@@ -1,4 +1,4 @@
-# CycDockAssem_overwrite
+# CycDockAssem_multiprocess
 
 源项目 [https://github.com/victorPKU/CycAssem]
 
