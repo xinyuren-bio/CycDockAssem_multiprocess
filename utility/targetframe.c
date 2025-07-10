@@ -217,4 +217,3 @@ int main(int argc, char *argv[])
 	printrotted(argv[3], an, nam,xyz);
 	printboxcenter(txyz);
 }
-

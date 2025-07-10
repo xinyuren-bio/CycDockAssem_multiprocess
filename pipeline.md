@@ -86,10 +86,13 @@ python ./getfragpair.py ../ALK1/box1dockfrag ../ALK1/box2dockfrag -56 8 ../ALK1/
 ```bash
 mkdir ../ALK1/fraglinking
 python fraglink.py
+```
+
+### 11.assemble cyc
+```bash
 mkdir ../ALK1/AssembledCyc
 # 对c源码进行了修改
 python ./assemblecyc.py --fraglinking_dir ../ALK1/fraglinking/ --assembled_cyc_dir ../ALK1/AssembledCyc/
-../utility/SelectBuildcomplex ../ALK1/AssembledCyc/ALK1Cyc_4.pdb -55.0 2 -55.0 3 ../ALK
-1/complexmodel/ ../ALK1/box1.pdb
-
+../utility/SelectBuildcomplex ../ALK1/AssembledCyc/ALK1Cyc_4.pdb -55.0 2 -55.0 3 ../ALK1/complexmodel/ ../ALK1/box1.pdb
+```
 

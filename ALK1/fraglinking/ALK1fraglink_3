@@ -1,0 +1,62 @@
+TITLE   1  1  2
+REMARK  dock1  1  -29.928 ../ALK1/dockmodel/SDOCK_ALK1box1_3ljkA_0226_0001_001.pdb
+REMARK  dock2  0  -26.436 ../ALK1/dockmodel/SDOCK_ALK1box2_6rjcA_0324_0004_001.pdb
+REMARK  link ../ALK1/fraglib/tp_4o0lA_0097.pdb
+REMARK  score     -2.331    0.118    0.000    0.000   -2.805
+ATOM      1  N   THR A 165      10.331   0.228   2.588
+ATOM      2  CA  THR A 165       9.133   0.244   3.423
+ATOM      3  C   THR A 165       7.949  -0.191   2.559
+ATOM      4  O   THR A 165       8.048  -1.212   1.849
+ATOM      5  N   SER A 166       6.857   0.553   2.582
+ATOM      6  CA  SER A 166       5.680   0.171   1.811
+ATOM      7  C   SER A 166       4.624   1.264   1.949
+ATOM      8  O   SER A 166       4.679   2.072   2.885
+ATOM      9  N   ILE A 167       3.691   1.296   1.003
+ATOM     10  CA  ILE A 167       2.445   2.020   1.169
+ATOM     11  C   ILE A 167       1.768   1.651   2.490
+ATOM     12  O   ILE A 167       1.052   2.470   3.069
+END
+TITLE   1  2  2
+REMARK  dock1  1  -29.928 ../ALK1/dockmodel/SDOCK_ALK1box1_3ljkA_0226_0001_001.pdb
+REMARK  dock2  0  -26.436 ../ALK1/dockmodel/SDOCK_ALK1box2_6rjcA_0324_0004_001.pdb
+REMARK  link ../ALK1/fraglib/tp_3jzlA_0217.pdb
+REMARK  score     -0.592    0.198    0.810    0.611   -2.805
+ATOM      1  N   VAL A 387      10.287   0.374   2.557
+ATOM      2  CA  VAL A 387       9.149   0.084   3.461
+ATOM      3  C   VAL A 387       8.141   1.204   3.190
+ATOM      4  O   VAL A 387       8.299   2.297   3.720
+ATOM      5  N   GLN A 388       7.118   0.906   2.394
+ATOM      6  CA  GLN A 388       6.158   1.924   1.897
+ATOM      7  C   GLN A 388       4.778   1.391   1.610
+ATOM      8  O   GLN A 388       4.550   0.194   1.607
+ATOM      9  N   GLY A 389       3.845   2.308   1.342
+ATOM     10  CA  GLY A 389       2.451   1.942   1.142
+ATOM     11  C   GLY A 389       1.790   1.743   2.510
+ATOM     12  O   GLY A 389       2.414   2.013   3.554
+END
+TITLE   2  1  1
+REMARK  dock1  1  -26.436 ../ALK1/dockmodel/SDOCK_ALK1box2_6rjcA_0324_0004_001.pdb
+REMARK  dock2  1  -29.928 ../ALK1/dockmodel/SDOCK_ALK1box1_3ljkA_0226_0001_001.pdb
+REMARK  link ../ALK1/fraglib/Pp_4y9wA_0081.pdb
+REMARK  score      3.591    0.148    0.000    0.000   -1.000
+ATOM      1  N   THR A 108       3.303  -3.824   2.713
+ATOM      2  CA  THR A 108       2.641  -2.918   3.601
+ATOM      3  C   THR A 108       3.349  -2.741   4.948
+ATOM      4  O   THR A 108       2.989  -1.802   5.688
+ATOM      5  N   SER A 109       4.373  -3.521   5.242
+ATOM      6  CA  SER A 109       5.234  -3.196   6.400
+ATOM      7  C   SER A 109       6.600  -3.810   6.101
+ATOM      8  O   SER A 109       6.737  -4.916   5.575
+ATOM      9  N   THR A 110       7.635  -3.033   6.404
+ATOM     10  CA  THR A 110       8.991  -3.501   6.137
+ATOM     11  C   THR A 110       9.981  -2.776   7.004
+ATOM     12  O   THR A 110       9.835  -1.577   7.286
+ATOM     13  N   SER A 111      11.075  -3.496   7.334
+ATOM     14  CA  SER A 111      12.259  -2.904   7.917
+ATOM     15  C   SER A 111      13.407  -2.755   6.915
+ATOM     16  O   SER A 111      14.494  -2.324   7.315
+ATOM     17  N   VAL A 112      13.157  -3.100   5.660
+ATOM     18  CA  VAL A 112      14.100  -2.800   4.584
+ATOM     19  C   VAL A 112      13.892  -1.338   4.176
+ATOM     20  O   VAL A 112      12.832  -0.763   4.379
+END
