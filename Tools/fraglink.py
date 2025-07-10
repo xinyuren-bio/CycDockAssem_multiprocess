@@ -17,17 +17,17 @@ from scoring import check_steric, check_steric2_np, dock_to_target, pepterdock
 # ==============================================================================
 CONFIG = {
     'DEBUG_MODE': True,
-    'MAX_WORKERS': 40,
-    # 'PAIR_LIST_FILE': "/data1/home/renxinyu/sdock/fraglink/test/ALK1dockfragpair",
-    # 'TARGET_PDB_FILE' : "/data1/home/renxinyu/sdock/fraglink/test/ALK1box1.pdb",
-    # 'TRIPEP_GEO_DIR' : "/data1/home/renxinyu/sdock/fraglink/test/fragtermgeo/tripep",
-    # 'TETRAPEP_GEO_DIR' : "/data1/home/renxinyu/sdock/fraglink/test/fragtermgeo/tetrapep",
-    # 'PENTPEP_GEO_DIR' : "/data1/ho/me/renxinyu/sdock/fraglink/test/fragtermgeo/pentpep",
-    # 'FRAGLIB_DIR' : "/data1/home/renxinyu/sdock/fraglink/test/fraglib",
-    # 'OUTPUT_PREFIX': "Giaoalink",
-    'OUTPUT_DIR': "TNFa/fraglinking/",
-    'COMBINED_OUTPUT_LOG': "TNFa/run_error_log.txt",  # 错误记录
-    'PROGRESS_LOG_FILE': "TNFa/run_progress.log", # 进度记录
+    'MAX_WORKERS': 1,
+    'PAIR_LIST_FILE': "../ALK1/ALK1dockfragpair",
+    'TARGET_PDB_FILE' : "../ALK1/box1.pdb",
+    'TRIPEP_GEO_DIR' : "../ALK1/fragtermgeo/tripep",
+    'TETRAPEP_GEO_DIR' : "../ALK1/fragtermgeo/tetrapep",
+    'PENTPEP_GEO_DIR' : "../ALK1/fragtermgeo/pentpep",
+    'FRAGLIB_DIR' : "../ALK1/fraglib",
+    'OUTPUT_PREFIX': "ALK1fraglink",
+    'OUTPUT_DIR': "../ALK1/fraglinking",
+    'COMBINED_OUTPUT_LOG': "../ALK1/run_error_log.txt",  # 错误记录
+    'PROGRESS_LOG_FILE': "../ALK1/run_progress.log", # 进度记录
     'ACCEPT_RMSD': 2.0,
     'ACCEPT_STERIC': 4.0,
     'ACCEPT_DOCKING': 2.0,
@@ -333,7 +333,7 @@ def write_fraglink_output(final_candidates, config, job_args):
             
             f.write(f"REMARK  dock1 {dock1_flag:2d} {dock1_score:8.3f} {dock1_path}\n")
             f.write(f"REMARK  dock2 {dock2_flag:2d} {dock2_score:8.3f} {dock2_path}\n")
-            f.write(f"REMARK  link ./test/fraglib//{candidate['name']}\n")
+            f.write(f"REMARK  link {config['FRAGLIB_DIR']}/{candidate['name']}\n")
             f.write(f"REMARK  score   {candidate['score']:8.3f} {candidate['rmsd']:8.3f} {candidate['steric']:8.3f} {candidate['docking']:8.3f} {candidate['terminalscore']:8.3f}\n")
             
             atom_serial = 1
