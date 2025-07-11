@@ -2,11 +2,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <ctype.h> // 为 isspace() 函数添加的头文件
 
 // 调试函数，确保在程序崩溃前所有信息都被打印出来
 void debug_flush() {
     fflush(stdout);
 }
+
+// *** 新增的辅助函数：删除字符串末尾的空白字符 ***
+void trim_trailing_whitespace(char *str) {
+    if (str == NULL) return;
+    int len = strlen(str);
+    // 从后往前遍历，只要是空白字符，就将其替换为字符串结束符 '\0'
+    while (len > 0 && isspace((unsigned char)str[len - 1])) {
+        len--;
+    }
+    str[len] = '\0';
+}
+
 
 typedef struct{
     int start;
@@ -270,7 +283,9 @@ void getxyz(char line[], float xyz[3])
         xyz[i]=atof(line+30+8*i);
 }
 
-#define LINELEN 83 // PDB文件行最大长度通常为80字符 + '\n' + '\0'
+// *** 修改：增加行缓冲区大小以容纳长文件路径 ***
+#define LINELEN 512 
+
 void readfrag(char *pn, FRAGMENT *p)
 {
     FILE *pf;
@@ -355,12 +370,13 @@ void getfname(char *line, char *linkname)
         while (*start == ' ' && *start != '\0') {
             start++;
         }
-        // 复制文件名直到遇到空格、换行符或结束符
-        int j = 0;
-        while (*start != '\n' && *start != ' ' && *start != '\0' && j < 99) { // 99 + '\0' = 100
-            linkname[j++] = *start++;
-        }
-        linkname[j] = '\0';
+        
+        // *** 修改：在复制前，先清理字符串末尾的空白字符 ***
+        trim_trailing_whitespace(start);
+
+        strncpy(linkname, start, 99);
+        linkname[99] = '\0';
+
     } else {
         linkname[0] = '\0'; // 未找到 "link" 关键字
     }
@@ -390,12 +406,16 @@ void readlink(char *pn, FRAGMENT p[2][BESTCLUSTERNUM], int typ[2][BESTCLUSTERNUM
         if(!strncmp(line,"TITLE",5)){
             // 解析 TITLE 行：TITLE ID LID Type
             // 例如 "TITLE    1 1 0" -> id=0, lid=0, typ=0
-            if (sscanf(line + 8, "%d %d %d", &id, &lid, &typ[0][0]) == 3) { // 临时读取到 typ[0][0]，后面会更新
+            if (sscanf(line + 8, "%d %d", &id, &lid) >= 2) { 
                 id = id - 1; // 转换为0-based索引
                 lid = lid - 1; // 转换为0-based索引
-                // 现在将类型值赋给正确的位置
+                
                 if (id >= 0 && id < 2 && lid >= 0 && lid < BESTCLUSTERNUM) {
-                    typ[id][lid] = atoi(line + 13); // 重新从字符串中解析type
+                    // 安全地解析类型
+                    char* type_str_start = line + 13;
+                    while(*type_str_start == ' ' && *type_str_start != '\0') type_str_start++;
+                    typ[id][lid] = atoi(type_str_start);
+                    
                     if (clusterN[id] < lid + 1) clusterN[id] = lid + 1; // 更新簇数量
                 } else {
                     printf("致命错误 (readlink): 无效的 TITLE 行。id=%d, lid=%d。 id必须在[1,2]范围内, lid必须在[1,%d]范围内。\n", id + 1, lid + 1, BESTCLUSTERNUM);
@@ -405,10 +425,7 @@ void readlink(char *pn, FRAGMENT p[2][BESTCLUSTERNUM], int typ[2][BESTCLUSTERNUM
                     exit(1);
                 }
             } else {
-                printf("致命错误 (readlink): 无法解析 TITLE 行的格式。行: %s", line);
-                debug_flush();
-                fclose(pf);
-                exit(1);
+                // TITLE行格式不匹配，可以忽略或警告
             }
         }
         else if(!strncmp(line,"REMARK  dock1",13)){
@@ -416,33 +433,20 @@ void readlink(char *pn, FRAGMENT p[2][BESTCLUSTERNUM], int typ[2][BESTCLUSTERNUM
                 char *last_space = strrchr(line, ' ');
                 if (last_space) {
                     char *path_start = last_space + 1;
-                    size_t len_path = strlen(path_start);
-                    // 复制文件名，确保不越界
-                    if (len_path < 100) {
-                        strncpy(fragname[0], path_start, len_path);
-                        fragname[0][len_path] = '\0';
-                    } else {
-                        strncpy(fragname[0], path_start, 99);
-                        fragname[0][99] = '\0';
-                        printf("警告 (readlink): fragname[0]文件名过长，已被截断。文件名: %s\n", path_start);
-                        debug_flush();
-                    }
-                } else {
-                    fragname[0][0] = '\0'; // 未找到空格，文件名为空
-                }
+                    
+                    // *** 核心修改：在复制文件名之前，清理字符串 ***
+                    trim_trailing_whitespace(path_start);
 
-                int len = strlen(fragname[0]);
-                // if (len > 3 && strcmp(fragname[0] + len - 4, ".pdb") == 0) { // 检查.pdb后缀
-                    // strcat(fragname[0], "b"); // 添加'b'
-                // }
-                
-                // 确保fragscore[0]赋值给当前id
-                fragscore[0]=atof(line+16);
+                    strncpy(fragname[0], path_start, 99);
+                    fragname[0][99] = '\0'; // 确保安全
+                } else {
+                    fragname[0][0] = '\0'; // 未找到，设为空字符串
+                }
+                fragscore[0]=atof(line+16); // 假设分数位置固定
                 hasgetfragname1=1;
             }
-            // tertyp 赋值需要确保 id 和 lid 的值是有效的，这里使用当前解析到的 id 和 lid
             if (id >= 0 && id < 2 && lid >= 0 && lid < BESTCLUSTERNUM) {
-                tertyp[id][lid][0]=atoi(line+13);
+                tertyp[id][lid][0]=atoi(line+13); // 假设tertyp位置固定
             }
         }
         else if(!strncmp(line,"REMARK  dock2",13)){
@@ -450,49 +454,33 @@ void readlink(char *pn, FRAGMENT p[2][BESTCLUSTERNUM], int typ[2][BESTCLUSTERNUM
                 char *last_space = strrchr(line, ' ');
                 if (last_space) {
                     char *path_start = last_space + 1;
-                    size_t len_path = strlen(path_start);
-                    // 复制文件名，确保不越界
-                    if (len_path < 100) {
-                        strncpy(fragname[1], path_start, len_path);
-                        fragname[1][len_path] = '\0';
-                    } else {
-                        strncpy(fragname[1], path_start, 99);
-                        fragname[1][99] = '\0';
-                        printf("警告 (readlink): fragname[1]文件名过长，已被截断。文件名: %s\n", path_start);
-                        debug_flush();
-                    }
+                    
+                    // *** 核心修改：在复制文件名之前，清理字符串 ***
+                    trim_trailing_whitespace(path_start);
+
+                    strncpy(fragname[1], path_start, 99);
+                    fragname[1][99] = '\0'; // 确保安全
                 } else {
-                    fragname[1][0] = '\0'; // 未找到空格，文件名为空
+                    fragname[1][0] = '\0'; // 未找到，设为空字符串
                 }
-                
-                int len = strlen(fragname[1]);
-                // if (len > 3 && strcmp(fragname[1] + len - 4, ".pdb") == 0) {
-                    // strcat(fragname[1], "b");
-                // }
-                
-                // 确保fragscore[1]赋值给当前id
                 fragscore[1]=atof(line+16);
                 hasgetfragname2=1;
             }
-            // tertyp 赋值需要确保 id 和 lid 的值是有效的
             if (id >= 0 && id < 2 && lid >= 0 && lid < BESTCLUSTERNUM) {
                 tertyp[id][lid][1]=atoi(line+13);
             }
         }
         else if(!strncmp(line,"REMARK  link",12)){
-            // linkname 赋值需要确保 id 和 lid 的值是有效的
             if (id >= 0 && id < 2 && lid >= 0 && lid < BESTCLUSTERNUM) {
                 getfname(line,linkname[id][lid]);
             }
         }
         else if(!strncmp(line,"REMARK  score",13)){
-            // linkscore 赋值需要确保 id 和 lid 的值是有效的
             if (id >= 0 && id < 2 && lid >= 0 && lid < BESTCLUSTERNUM) {
                 linkscore[id][lid]=atof(line+14);
             }
         }
         if(!strncmp(line,"ATOM",4)){
-            // 残基名判断
             if(rn == 0 || strncmp(line+17, p[id][lid].res[rn-1].nam, 9) != 0){
                  if (rn >= MAX_RES_IN_FRAG) {
                     printf("致命错误 (readlink): 片段 id=%d lid=%d 的残基数过多 (%d)。最大允许 %d。\n", id, lid, rn, MAX_RES_IN_FRAG);
@@ -508,15 +496,13 @@ void readlink(char *pn, FRAGMENT p[2][BESTCLUSTERNUM], int typ[2][BESTCLUSTERNUM
                     if(rn!=0) p[id][lid].res[rn-1].end=n-1;
                     rn++;
                 } else {
-                    // 如果 id 或 lid 无效，跳过当前ATOM行，并打印警告
                     printf("警告 (readlink): ATOM行在无效的 id/lid 区域被发现。id=%d, lid=%d。行: %s", id, lid, line);
                     debug_flush();
                     continue;
                 }
             }
             
-            // 原子数判断
-            if (n >= 100) { // FRAGMENT的xyz和nam数组大小是100
+            if (n >= 100) {
                  printf("致命错误 (readlink): 片段 id=%d lid=%d 的原子数过多 (%d)。最大允许 100。\n", id, lid, n);
                  debug_flush();
                  fclose(pf);
@@ -553,7 +539,6 @@ void readlink(char *pn, FRAGMENT p[2][BESTCLUSTERNUM], int typ[2][BESTCLUSTERNUM
             }
         }
         if(!strncmp(line,"END",3)){
-            // 确保在END记录之前，id和lid是有效的
             if (id >= 0 && id < 2 && lid >= 0 && lid < BESTCLUSTERNUM) {
                 p[id][lid].an=n;
                 p[id][lid].resn=rn;
@@ -562,7 +547,7 @@ void readlink(char *pn, FRAGMENT p[2][BESTCLUSTERNUM], int typ[2][BESTCLUSTERNUM
                 printf("警告 (readlink): END记录在无效的 id/lid 区域被发现。id=%d, lid=%d。行: %s", id, lid, line);
                 debug_flush();
             }
-            n=0;rn=0; // 为文件中的下一个片段重置计数器
+            n=0;rn=0; 
         }
     }
     fclose(pf);
@@ -575,105 +560,97 @@ void cpx(float a[3],float b[3])
 }
 void assemble(FRAGMENT *p1, FRAGMENT *l2, FRAGMENT *p2, FRAGMENT *l1, int t1, int t2, int tertyp1[2], int tertyp2[2],char chid,CYCPEP *cyc)
 {
-    // atno 不再在 assemble 中使用，它在 printpepstructure 中是每条记录的原子编号
     int resn=0; // cyc->res 的残基索引
     int ir,ip;
-    int sr,er; // 当前处理片段的起始/结束残基索引
-    int sa,ea; // 起始/结束处理模式 (0: 全部, 1: N/C端不包含, 2: 仅主链N/C原子)
+    int sr,er; 
+    int sa,ea; 
     int i;
     FRAGMENT *p;
-    char resname[4]; // 3个字符的残基名 + '\0'
+    char resname[4]; 
 
-    for(ip=0;ip<4;ip++){ // 循环处理四个片段：p1, l2, p2, l1
+    for(ip=0;ip<4;ip++){ 
         if(ip==0){ p=p1; sr=0;er=p1->resn;if(t1==1) sa=0; else sa=1; if(t2==1) ea=0; else ea=1;} 
         else  if(ip==1){ p=l2;if(t2==1){ sr=1;er=l2->resn-1;sa=0; ea=0;} else{sr=0;er=l2->resn;sa=2; ea=2;} } 
         else if(ip==2){ p=p2; sr=0;er=p2->resn;if(t2==1) sa=0; else sa=1; if(t1==1) ea=0; else ea=1;} 
         else if(ip==3){ p=l1; if(t1==1){ sr=1;er=l1->resn-1;sa=0; ea=0;} else{sr=0;er=l1->resn;sa=2; ea=2;}} 
         
-        for(ir=sr;ir<er;ir++){ // 循环处理当前片段的残基
+        for(ir=sr;ir<er;ir++){ 
             if (resn >= MAX_RES_IN_PEP) {
                  printf("致命错误 (assemble): 尝试添加第 %d 个残基，但最大允许 %d。\n", resn, MAX_RES_IN_PEP);
                  debug_flush();
                  exit(1);
             }
 
-            // 处理残基名
             strncpy(resname, p->res[ir].nam, 3);
-            resname[3] = '\0'; // 确保空字符终止
+            resname[3] = '\0'; 
 
-            // 处理连接处残基的特殊命名逻辑
-            if(!(sa==2&&ir==sr)){ // 如果不是类型2连接器且是第一个残基
-                // 通常残基名
+            if(!(sa==2&&ir==sr)){
             }
-            if(ea==2&&ir==er-1){ // 如果是类型2连接器且是最后一个残基
-                if(p==l2){ // 如果是第二个连接器片段的末尾
-                    strncpy(resname, p2->res[0].nam, 3); // 使用p2的第一个残基名
+            if(ea==2&&ir==er-1){ 
+                if(p==l2){ 
+                    strncpy(resname, p2->res[0].nam, 3);
                     resname[3] = '\0';
                 }
-                else if(p==l1){ // 如果是第一个连接器片段的末尾
-                    strncpy(resname, p1->res[0].nam, 3); // 使用p1的第一个残基名
+                else if(p==l1){ 
+                    strncpy(resname, p1->res[0].nam, 3);
                     resname[3] = '\0';
-                    resn=0; // 这是循环肽链的特殊处理，将resn重置为0
+                    resn=0; 
                 }
             }
             sprintf(cyc->res[resn].resnam,"%s %c%4d",resname,chid,resn+1);
-            cyc->res[resn].satn=0; // 侧链原子计数重置
+            cyc->res[resn].satn=0; 
 
-            for(i=p->res[ir].start;i<=p->res[ir].end;i++){ // 循环处理当前残基的原子
-                // 根据连接类型和原子类型跳过某些原子
-                if(ir==sr){ // 起始残基
-                    if(sa!=0 && i==p->res[ir].N) continue; // 如果sa不是0，且当前原子是N原子，跳过
-                    if(sa==2 && i==p->res[ir].CA) continue; // 如果sa是2，且当前原子是CA原子，跳过
+            for(i=p->res[ir].start;i<=p->res[ir].end;i++){
+                if(ir==sr){ 
+                    if(sa!=0 && i==p->res[ir].N) continue; 
+                    if(sa==2 && i==p->res[ir].CA) continue; 
                 }
-                if(ir==er-1){ // 结束残基
+                if(ir==er-1){ 
                     if(ea==1){
-                        if(i==p->res[ir].C||i==p->res[ir].O) continue; // 如果ea是1，且当前原子是C或O原子，跳过
+                        if(i==p->res[ir].C||i==p->res[ir].O) continue;
                     }
                     if(ea==2){
-                        if(i>=p->res[ir].CA) break; // 如果ea是2，且当前原子是CA或其后的原子，停止处理
+                        if(i>=p->res[ir].CA) break; 
                     }
                 }
                 if(sa==2&&ir==sr){
-                    if(i!=p->res[ir].C&&i!=p->res[ir].O) continue; // 如果sa是2，且当前原子不是C或O，跳过
+                    if(i!=p->res[ir].C&&i!=p->res[ir].O) continue; 
                 }
-                // 特定片段的末端处理
+                
                 if((p==p1)&&ir==sr&&tertyp1[0]==0&&i>=p->res[ir].sstart) break;
                 if((p==p2)&&ir==sr&&tertyp2[0]==0&&i>=p->res[ir].sstart) break;
                 if((p==p2)&&ir==er-1&&tertyp1[1]==0&&i>=p->res[ir].sstart) break;
                 if((p==p1)&&ir==er-1&&tertyp2[1]==0&&i>=p->res[ir].sstart) break;
 
-                // 侧链原子数量检查
-                if (cyc->res[resn].satn >= 10) { // CYCRES的side和nam数组大小是10
+                if (cyc->res[resn].satn >= 10) { 
                      printf("致命错误 (assemble): 残基 %d ('%s') 的侧链原子过多 (%d)。最大允许 10。\n", resn, cyc->res[resn].resnam, cyc->res[resn].satn);
                      debug_flush();
                      exit(1);
                 }
 
-                // 复制原子坐标和名称
                 if(!strcmp(p->nam[i],"N  ")) cpx(cyc->res[resn].N, p->xyz[i]);
                 else if(!strcmp(p->nam[i],"CA ")) cpx(cyc->res[resn].CA, p->xyz[i]);
                 else if(!strcmp(p->nam[i],"C  ")) cpx(cyc->res[resn].C, p->xyz[i]);
                 else if(!strcmp(p->nam[i],"O  ")) cpx(cyc->res[resn].O, p->xyz[i]);
-                else{ // 侧链原子
+                else{ 
                     cpx(cyc->res[resn].side[cyc->res[resn].satn], p->xyz[i]);
                     strcpy(cyc->res[resn].nam[cyc->res[resn].satn], p->nam[i]); 
-                    cyc->res[resn].nam[cyc->res[resn].satn][3]='\0'; // 确保空字符终止
+                    cyc->res[resn].nam[cyc->res[resn].satn][3]='\0'; 
                     cyc->res[resn].satn++;
                 }
             }
             resn++;
-            if(ir==er-1&&ea!=0){ // 如果是片段的最后一个残基，且ea不为0（表示有末端处理）
-                resn--; // 减少残基计数，因为这个残基被部分处理或作为连接点
+            if(ir==er-1&&ea!=0){
+                resn--;
             }
         }
     }
-    // 最终的肽链残基总数
     cyc->resn = resn; 
 }
 
 void printpepstructure(FILE *pf,int id,char fragname[2][100], float dockscore[2], CYCPEP *cyc)
 {
-    int atno=1; // 原子编号从1开始
+    int atno=1; 
     int ir,ia;
     int ih;
 
@@ -686,7 +663,6 @@ void printpepstructure(FILE *pf,int id,char fragname[2][100], float dockscore[2]
     fprintf(pf,"REMARK  resn %2d %3d %3d %3d %3d\n",cyc->resn,cyc->len[0],cyc->len[1],cyc->len[2],cyc->len[3]);
     fprintf(pf,"REMARK  backbone HB No. %2d\n",cyc->hbn);
     for(ih=0;ih<cyc->hbn;ih++){
-        // 确保索引在有效范围内
         if (cyc->index[ih][0] < cyc->resn && cyc->index[ih][1] < cyc->resn) {
             fprintf(pf,"REMARK  HB %2d [%s]--[%s] %8.3f\n",ih+1,cyc->res[cyc->index[ih][0]].resnam,cyc->res[cyc->index[ih][1]].resnam, cyc->hbdis[ih]);
         } else {
@@ -700,7 +676,7 @@ void printpepstructure(FILE *pf,int id,char fragname[2][100], float dockscore[2]
         fprintf(pf,"ATOM %6d  C   %s    %8.3f%8.3f%8.3f\n",atno,cyc->res[ir].resnam,cyc->res[ir].C[0],cyc->res[ir].C[1],cyc->res[ir].C[2]); atno++;
         fprintf(pf,"ATOM %6d  O   %s    %8.3f%8.3f%8.3f\n",atno,cyc->res[ir].resnam,cyc->res[ir].O[0],cyc->res[ir].O[1],cyc->res[ir].O[2]); atno++;
         for(ia=0;ia<cyc->res[ir].satn;ia++){
-            fprintf(pf,"ATOM %6d  %s %s    %8.3f%8.3f%8.3f\n",atno,cyc->res[ir].nam[ia],cyc->res[ir].resnam,cyc->res[ir].side[ia][0],cyc->res[ir].side[ia][1],cyc->res[ir].side[ia][2]); atno++;
+            fprintf(pf,"ATOM %6d %-4s%s    %8.3f%8.3f%8.3f\n",atno,cyc->res[ir].nam[ia],cyc->res[ir].resnam,cyc->res[ir].side[ia][0],cyc->res[ir].side[ia][1],cyc->res[ir].side[ia][2]); atno++;
         }
     }
 
@@ -714,7 +690,7 @@ int checkcollision(FRAGMENT *p1,FRAGMENT *p2)
         for(ia=0;ia<p1->an;ia++){
                 for(ja=0;ja<p2->an;ja++){
                         dis=distance2(p1->xyz[ia], p2->xyz[ja]);
-                        if(dis<2.5*2.5){ // 使用2.5埃的平方作为碰撞阈值
+                        if(dis<2.5*2.5){ 
                                 return 0; // 发生碰撞
                         }
                 }
@@ -725,19 +701,18 @@ int checkcollision(FRAGMENT *p1,FRAGMENT *p2)
 #define MAXMODEL 25
 void calHBond(CYCPEP *cyc)
 {
-    int pair[MAXHBN][2]; // 潜在氢键对
-    int hbn,ih; // 氢键数量
-    float hbdis[MAXHBN]; // 氢键距离
-    int index[MAXHBN]; // 有效氢键的索引
+    int pair[MAXHBN][2];
+    int hbn,ih; 
+    float hbdis[MAXHBN];
+    int index[MAXHBN];
 
-    addHN(cyc); // 为所有N原子添加H原子
-    hbn=dispair(cyc, pair, hbdis); // 寻找潜在氢键对
+    addHN(cyc);
+    hbn=dispair(cyc, pair, hbdis); 
     if(hbn > 0) {
-      hbn=checkangle(cyc, hbn, pair, index); // 进一步筛选有效氢键
+      hbn=checkangle(cyc, hbn, pair, index);
     }
-    cyc->hbn=hbn; // 最终的氢键数量
+    cyc->hbn=hbn;
     for(ih=0;ih<hbn;ih++){
-        // 拷贝有效氢键的信息到CYCPEP结构体
         cyc->index[ih][0]=pair[index[ih]][0];
         cyc->index[ih][1]=pair[index[ih]][1];
         cyc->hbdis[ih]=hbdis[index[ih]];
@@ -746,8 +721,7 @@ void calHBond(CYCPEP *cyc)
 
 int main(int argc, char *argv[])
 {
-    // 使用 malloc 在堆上分配大数组，防止栈溢出
-    FRAGMENT (*p)[BESTCLUSTERNUM]; // p 是指向 (FRAGMENT BESTCLUSTERNUM) 数组的指针
+    FRAGMENT (*p)[BESTCLUSTERNUM]; 
     FRAGMENT *p1, *p2;
     CYCPEP *cyc;
 
@@ -757,14 +731,13 @@ int main(int argc, char *argv[])
     float fragscore[2];
     float linkscore[2][BESTCLUSTERNUM];
     int tertyp[2][BESTCLUSTERNUM][2];
-    int clusterN[2] = {0, 0}; // 每个片段找到的连接器簇数量
+    int clusterN[2] = {0, 0};
     int il,jl;
     int col;
     int maxlinkres;
-    int modn=0,imod; // 生成的模型数量
+    int modn=0,imod; 
     FILE *pf;
 
-    // 检查命令行参数
     if (argc < 5) {
         printf("致命错误: 无效的参数数量。\n");
         printf("用法: %s <link_file> <output_pdb> <max_linker_res> <chain_id>\n", argv[0]);
@@ -772,24 +745,21 @@ int main(int argc, char *argv[])
         return 1;
     }
     
-    // 进行内存分配
-    p = malloc(2 * sizeof(*p)); // 分配 p[2][BESTCLUSTERNUM] 的内存
+    p = malloc(2 * sizeof(*p)); 
     p1 = malloc(sizeof(FRAGMENT));
     p2 = malloc(sizeof(FRAGMENT));
     cyc = malloc(MAXMODEL * sizeof(CYCPEP));
 
-    // 检查 malloc 是否成功
     if (p == NULL || p1 == NULL || p2 == NULL || cyc == NULL) {
         printf("致命错误: 内存分配失败。\n");
         debug_flush();
-        // 释放已成功分配的部分内存
         free(p);
         free(p1);
         free(p2);
         free(cyc);
         return 1;
     }
-    // 初始化 fragname，防止在 readlink 未能赋值时出现问题
+    
     fragname[0][0] = '\0';
     fragname[1][0] = '\0';
 
@@ -797,11 +767,9 @@ int main(int argc, char *argv[])
 
     readlink(argv[1], p,typ,fragname,linkname,fragscore,linkscore,tertyp,clusterN);
     
-    // 检查是否成功解析了文件名
     if(strlen(fragname[0]) == 0 || strlen(fragname[1]) == 0) {
         printf("\n致命错误: 未能从链接文件 '%s' 中正确读取片段文件名 (REMARK dock1/dock2)。\n\n", argv[1]);
         debug_flush();
-        // 释放内存
         free(p); free(p1); free(p2); free(cyc);
         return 1;
     }
@@ -814,15 +782,13 @@ int main(int argc, char *argv[])
             if(modn>=MAXMODEL){
                 printf("警告: 生成的模型数量 (%d) 已达到最大值 MAXMODEL (%d)，剩余组合将被忽略。\n", modn, MAXMODEL);
                 debug_flush();
-                goto end_loops; // 跳出嵌套循环
+                goto end_loops; 
             }
 
-            // 检查连接器总残基数是否超过限制
             if(p[0][il].resn+p[1][jl].resn > maxlinkres) continue;
             
-            // 检查片段之间是否发生碰撞
             col=checkcollision(&(p[1][jl]),&(p[0][il]));
-            if(col==0) continue; // 发生碰撞，跳过当前组合
+            if(col==0) continue; 
             
             assemble(p1, &(p[1][jl]),p2,&(p[0][il]),typ[0][il],typ[1][jl],tertyp[0][il],tertyp[1][jl],argv[4][0],cyc+modn);
             
@@ -836,17 +802,14 @@ int main(int argc, char *argv[])
             cyc[modn].len[1]=p[1][jl].resn;
             cyc[modn].len[2]=p2->resn; 
             cyc[modn].len[3]=p[0][il].resn;
-            // 计算最终肽链的残基总数
-            // 减4是因为在 assemble 逻辑中，两个主要片段的末端和两个连接器的起始/结束原子会被重叠或跳过，需要根据实际组装逻辑调整
-            // 这里的 -4 是一个经验值，可能需要根据具体组装规则进行精确调整
+            
             cyc[modn].resn=cyc[modn].len[0]+cyc[modn].len[1]+cyc[modn].len[2]+cyc[modn].len[3]-4; 
             
             modn++;
         }
     }
-end_loops:; // goto 标签
+end_loops:; 
 
-    // 新增逻辑：检查在主循环后是否生成了任何模型
     if (modn == 0) {
         printf("\n---> 警告：程序未生成任何模型 <---\n");
         printf("这很可能是因为以下原因之一:\n");
@@ -854,16 +817,12 @@ end_loops:; // goto 标签
         printf("   根据链接文件 '%s' 的解析:\n", argv[1]);
         printf("   - 片段1 (dock1) 找到的连接器簇数量 (clusterN[0]): %d\n", clusterN[0]);
         printf("   - 片段2 (dock2) 找到的连接器簇数量 (clusterN[1]): %d\n", clusterN[1]);
-        printf("   程序当前的逻辑要求两个片段的连接器数量都必须大于0，才能进行组合。\n");
         printf("   由于不满足此条件 (例如 %d * %d == 0)，没有模型被创建。\n", clusterN[0], clusterN[1]);
-        printf("   请检查输入文件 '%s' 是否包含了两个片段的'TITLE'信息，这些信息决定了连接器簇的数量。\n", argv[1]);
         printf("2. 所有可能的组合都因为碰撞检查或连接器残基数量限制而被跳过。\n");
         printf("   - <max_linker_res> 参数: %d\n", maxlinkres);
-        printf("   - 碰撞阈值: 2.5埃\n");
-        printf("因此，输出文件 '%s' 将为空或不包含有效模型。\n\n", argv[2]);
+        printf("因此，输出文件 '%s' 将为空。\n\n", argv[2]);
         debug_flush();
 
-        // 释放内存并正常退出
         free(p);
         free(p1);
         free(p2);
@@ -874,23 +833,21 @@ end_loops:; // goto 标签
     if((pf=fopen(argv[2],"w"))==NULL){
         printf("错误: 无法创建文件 %s\n",argv[2]);
         debug_flush();
-        // 释放内存
         free(p); free(p1); free(p2); free(cyc);
         exit(1);
     }
 
     for(imod=0;imod<modn;imod++){
-        calHBond(cyc+imod); // 计算每个模型的氢键
-        printpepstructure(pf, imod,fragname,fragscore, cyc+imod); // 打印模型到文件
+        calHBond(cyc+imod); 
+        printpepstructure(pf, imod,fragname,fragscore, cyc+imod);
     }
     fclose(pf);
 
-    // 释放所有已分配的内存
     free(p);
     free(p1);
     free(p2);
     free(cyc);
 
-    printf("程序成功完成。\n");
+    printf("程序成功完成，共生成 %d 个模型。\n", modn);
     return 0; 
 }

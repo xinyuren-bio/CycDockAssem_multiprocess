@@ -3,13 +3,14 @@ import subprocess
 import argparse
 import re
 
-def run_assemble_cyc_command(assemble_executable, input_file_path, output_file_path, param1, param2):
+def run_assemble_cyc_command(assemble_executable, input_file_path, output_file_path, param1, param2, dockmodel_dir):
     command_list = [
         assemble_executable,
         input_file_path,
         output_file_path,
         str(param1),
-        str(param2)
+        str(param2),
+        dockmodel_dir
     ]
 
     try:
@@ -49,12 +50,16 @@ if __name__ == "__main__":
                         help="输出 AssembledCyc/ALK1Cyc_X.pdb 文件的目录路径。")
     parser.add_argument("--input_prefix", type=str, default="ALK1fraglink_",
                         help="输入文件名的前缀 (例如: ALK1fraglink_).")
-    parser.add_argument("--output_prefix", type=str, default="ALK1Cyc_",
-                        help="输出文件名的前缀 (例如: ALK1Cyc_).")
+    parser.add_argument("--input_suffix", type=str, default="",
+                        help="输入文件名的后缀 (例如: '.txt' 或 '.pdb').")
+    parser.add_argument("--output_prefix", type=str, default="Cyc_", # <--- 修改默认值为更通用的 "Cyc_"
+                        help="输出文件名的前缀 (例如: ALK1Cyc_ 或 TestCyc_).") # <--- 更新帮助信息
     parser.add_argument("--param1", type=int, default=8,
                         help="第一个固定参数 (例如: 8)。")
     parser.add_argument("--param2", type=str, default="X",
                         help="第二个固定参数 (例如: X)。")
+    parser.add_argument("--dockmodel_dir", type=str, required=True,
+                        help="包含 SDOCK_Testbox1/2_*pdb 文件的 dockmodel 目录路径。")
 
     args = parser.parse_args()
 
@@ -62,9 +67,11 @@ if __name__ == "__main__":
     fraglinking_dir = os.path.expanduser(args.fraglinking_dir)
     assembled_cyc_dir = os.path.expanduser(args.assembled_cyc_dir)
     input_prefix = args.input_prefix
-    output_prefix = args.output_prefix
+    input_suffix = args.input_suffix
+    output_prefix = args.output_prefix # <--- 现在这里会接收命令行传入的值
     param1 = args.param1
     param2 = args.param2
+    dockmodel_dir = os.path.expanduser(args.dockmodel_dir)
 
     os.makedirs(assembled_cyc_dir, exist_ok=True)
 
@@ -72,10 +79,14 @@ if __name__ == "__main__":
     print(f"可执行文件: {assemble_executable}")
     print(f"输入目录: {fraglinking_dir}")
     print(f"输出目录: {assembled_cyc_dir}")
+    print(f"输入文件前缀: {input_prefix}")
+    print(f"输入文件后缀: {input_suffix}")
+    print(f"输出文件前缀: {output_prefix}") # <--- 打印新的输出前缀
     print(f"固定参数: {param1}, {param2}")
+    print(f"Dockmodel 目录: {dockmodel_dir}")
     print("-" * 30)
 
-    file_pattern = re.compile(rf"^{re.escape(input_prefix)}(\d+)$")
+    file_pattern = re.compile(rf"^{re.escape(input_prefix)}(\d+){re.escape(input_suffix)}$")
     
     found_files_info = []
     try:
@@ -92,7 +103,7 @@ if __name__ == "__main__":
         print(f"🔴 错误: 读取输入目录 '{fraglinking_dir}' 时发生错误: {e}")
  
     if not found_files_info:
-        print(f"🔴 警告: 在 '{fraglinking_dir}' 中未找到匹配 '{input_prefix}X' 模式的文件。请检查输入目录和前缀。")
+        print(f"🔴 警告: 在 '{fraglinking_dir}' 中未找到匹配 '{input_prefix}X{input_suffix}' 模式的文件。请检查输入目录和前缀/后缀。")
 
     total_files_to_process = len(found_files_info)
     print(f"将处理 {total_files_to_process} 个文件。")
@@ -100,11 +111,12 @@ if __name__ == "__main__":
 
     for i, (file_number, input_filename_base) in enumerate(found_files_info, 1):
         full_input_path = os.path.join(fraglinking_dir, input_filename_base)
-        output_filename_base = f"{output_prefix}{file_number}.pdb"
+        # 使用传入的 output_prefix 来构建输出文件名
+        output_filename_base = f"{output_prefix}{file_number}.pdb" # <--- 使用动态的 output_prefix
         full_output_path = os.path.join(assembled_cyc_dir, output_filename_base)
 
         print(f"处理文件 {i}/{total_files_to_process}: {full_input_path}")
-        run_assemble_cyc_command(assemble_executable, full_input_path, full_output_path, param1, param2)
+        run_assemble_cyc_command(assemble_executable, full_input_path, full_output_path, param1, param2, dockmodel_dir)
         print("-" * 20)
 
     print("--- 所有 AssembleCyc 任务执行完毕 ---")

@@ -1,215 +1,189 @@
-# project_base_dir: 定义整个项目的根目录。所有其他相对路径都将以此为基准。
-# 例如，如果您的 pipeline.py 运行在 /data1/home/renxinyu/sdock/CycDockAssem_overwrite/Tools/
-# 并且您的项目根目录是 /data1/home/renxinyu/sdock/CycDockAssem_overwrite/
-# 那么 project_base_dir 就设置为 /data1/home/renxinyu/sdock/CycDockAssem_overwrite/
-# 或者，如果 pipeline.py 运行在项目根目录，可以设置为 "."
-project_base_dir: "/data1/home/renxinyu/sdock/CycDockAssem_overwrite/"
+project_base_dir: "/data1/home/renxinyu/CycDockAssem_overwrite/" # <-- 项目根目录，包含 config.yml，pipeline.py 文件
+
+# ==============================================================================
+# 全局配置: 目标蛋白名称和SDOCK核心程序目录
+# ==============================================================================
+target_protein_name: "ALK1" # <-- 指定蛋白名称，也是文件夹的名称
+sdock_base_dir: "/data1/home/renxinyu/sdock/SDOCK2.0-restrict" # <-- SDOCK 可执行文件和数据文件所在的目录
+
+# ==============================================================================
+# 全局配置: 预处理和水分子处理后的片段文件根目录 (直接指定绝对路径)
+# ==============================================================================
+preprocessed_fragments_path: "/data1/home/renxinyu/CycDockAssem_overwrite/ALK1/fraglib/pre_fragments_all" # <-- 预处理后的片段文件目录，这里pre_fragments_all名称不可以更改
+water_fragments_path: "/data1/home/renxinyu/CycDockAssem_overwrite/ALK1/fraglib/w_all" # <-- 水分子处理后的片段文件目录，这里w_all名称不可以更改
 
 # ==============================================================================
 # 步骤 1: 下载 PDB 文件
-# 命令: cd ./Tools; python dowmload_pdb_from_rcsb.py --input_file $input_files output_dir $out_dir
-# 注意: dowmload_pdb_from_rcsb.py 脚本需要存在于 ${project_base_dir}/Tools/ 目录下
 # ==============================================================================
 step1_download_pdb:
   enabled: False
   script_path: "Tools/dowmload_pdb_from_rcsb.py"
   input_file: "input_pdbs.txt" # 包含要下载的 PDB ID 列表的文件
-  output_dir: "ALK1/downloaded_pdbs" # PDB 下载到的目录
-  # 如果您的 dowmload_pdb_from_rcsb.py 脚本需要额外的参数，请在这里添加
+  output_dir: "{{target_protein_name}}/downloaded_pdbs" # PDB 下载到的目录
 
 # ==============================================================================
 # 步骤 2: 将 PDB 文件切割转换为 fragments
-# 命令: python pdb2fragments.py
-# 注意: pdb2fragments.py 脚本需要存在于 ${project_base_dir}/Tools/ 目录下
-# 假设这个脚本不需要命令行参数，并且在特定上下文执行
 # ==============================================================================
 step2_pdb2fragments:
   enabled: False
   script_path: "Tools/pdb2fragments.py"
-  # 如果 pdb2fragments.py 需要参数，请在这里添加，例如：
-  # input_dir: "ALK1/downloaded_pdbs"
-  # output_dir: "ALK1/fragments"
 
 # ==============================================================================
 # 步骤 3: 对靶蛋白进行旋转
-# 命令: python rotate.py --input_pdb ../ALK1/ALK1orig.pdb --output ../ALK1/rotated.pdb --ref1 X,Y,Z --ref2 X,Y,Z --ref3 X,Y,Z
-# 注意: rotate.py 脚本需要存在于 ${project_base_dir}/Tools/ 目录下
 # ==============================================================================
 step3_rotate_protein:
-  enabled: true
+  enabled: True
   script_path: "Tools/rotate.py"
-  input_pdb: "ALK1/ALK1orig.pdb"
-  output_pdb: "ALK1/rotated.pdb"
+  input_pdb: "{{target_protein_name}}/{{target_protein_name}}orig.pdb" # 例如 ALK1/ALK1orig.pdb
+  output_pdb: "{{target_protein_name}}/rotated.pdb"
   ref1: "25.072,-20.981,-45.006"
   ref2: "26.114,-32.317,-41.141"
   ref3: "31.015,-30.723,-40.260"
 
 # ==============================================================================
 # 步骤 4: 生成靶蛋白的 box 文件以及 watmap 文件
-# 命令:
-# ../SDOCK2.0-restrict/preprocess ../ALK1/rotated.pdb -o ../ALK1/box1.pdb -a ../SDOCK2.0-restrict/ATM -m -6.011,0,0
-# ../SDOCK2.0-restrict/preprocess ../ALK1/rotated.pdb -o ../ALK1/box2.pdb -a ../SDOCK2.0-restrict/ATM -m 6.011,0,0
-# ../SDOCK2.0-restrict/watmap ../ALK1/box1.pdb ../ALK1/box1wat.pdb
-# ../SDOCK2.0-restrict/watmap ../ALK1/box2.pdb ../ALK1/box2wat.pdb
-# 注意: box1_m_param 和 box2_m_param 会被 step3 的输出覆盖 (如果 step3 成功提取)
 # ==============================================================================
 step4_generate_boxes_watmaps:
-  enabled: true
-  sdock_restrict_dir: "SDOCK2.0-restrict/" # SDOCK 可执行文件所在的目录
-  rotated_pdb: "ALK1/rotated.pdb"
-  box1_output_pdb: "ALK1/box1.pdb"
-  box2_output_pdb: "ALK1/box2.pdb"
-  box1_watmap_output: "ALK1/box1wat.pdb"
-  box2_watmap_output: "ALK1/box2wat.pdb"
+  enabled: True
+  sdock_restrict_dir: "{{sdock_base_dir}}"
+  rotated_pdb: "{{target_protein_name}}/rotated.pdb"
+  box1_output_pdb: "{{target_protein_name}}/box1.pdb"
+  box1_m_param: "-6.011,0,0" # 默认值，将被 step3 覆盖
+  box2_output_pdb: "{{target_protein_name}}/box2.pdb"
+  box2_m_param: "6.011,0,0" # 默认值，将被 step3 覆盖
+  box1_watmap_output: "{{target_protein_name}}/box1wat.pdb"
+  box2_watmap_output: "{{target_protein_name}}/box2wat.pdb"
 
 # ==============================================================================
-# 步骤 5: 处理对接片段
-# 命令: cd ../ALK1/fraglib; ./fragpreprocess.sh; ./fragwater.sh
-# 注意: fragpreprocess.sh 和 fragwater.sh 脚本需要存在于 ${project_base_dir}/ALK1/fraglib/ 目录下
+# 步骤 5: 处理对接片段 (现在只检查全局路径)
 # ==============================================================================
 step5_process_fragments:
-  enabled: true
-  fraglib_dir: "ALK1/fraglib"
+  enabled: True
 
 # ==============================================================================
 # 步骤 6: 生成 fragstruct, fragwmap 以及 recordf 文件
-# 命令:
-# python ./fragstruct.py --input_dir ../ALK1/fraglib/ --output_txt ../ALK1/fragstruct --tail ".pdb"
-# python ./struct2wmap.py --input_file ../ALK1/fragstruct --output_file ../ALK1/fragwmap --old_string preprocessed/pre --new_string watmap/w
-# python ./recordf.py --input_file ../ALK1/fragstruct --output_file ../ALK1/box1recordf --prefix_string ../ALK1/dockresult/ALK1box1_
-# python ./recordf.py --input_file ../ALK1/fragstruct --output_file ../ALK1/box2recordf --prefix_string ../ALK1/dockresult/ALK1box2_
-# mkdir ../ALK1/dockresult
-# 注意: fragstruct.py, struct2wmap.py, recordf.py 脚本需要存在于 ${project_base_dir}/Tools/ 目录下
 # ==============================================================================
 step6_generate_frag_files:
-  enabled: true
-  tools_dir: "Tools/" # 包含 fragstruct.py, struct2wmap.py, recordf.py 的目录
-  fraglib_input_dir: "ALK1/fraglib/"
-  fragstruct_output_txt: "ALK1/fragstruct"
+  enabled: True
+  tools_dir: "Tools/"
+  fragstruct_output_txt: "{{target_protein_name}}/fragstruct"
   fragstruct_tail: ".pdb"
-  fragwmap_output_file: "ALK1/fragwmap"
-  struct2wmap_old_string: "preprocessed/pre"
-  struct2wmap_new_string: "watmap/w"
-  dockresult_dir: "ALK1/dockresult" # 将创建此目录
-  box1recordf_output_file: "ALK1/box1recordf"
-  box1recordf_prefix_string: "ALK1/dockresult/ALK1box1_"
-  box2recordf_output_file: "ALK1/box2recordf"
-  box2recordf_prefix_string: "ALK1/dockresult/ALK1box2_"
+  fragwmap_output_file: "{{target_protein_name}}/fragwmap"
+  struct2wmap_old_string: "pre_fragments_all/pre" # 确保与实际路径匹配
+  struct2wmap_new_string: "w_all/w" # 确保与实际路径匹配
+  dockresult_dir: "{{target_protein_name}}/dockresult"
+  box1recordf_output_file: "{{target_protein_name}}/box1recordf"
+  box1recordf_prefix_string: "{{target_protein_name}}/dockresult/{{target_protein_name}}box1_"
+  box2recordf_output_file: "{{target_protein_name}}/box2recordf"
+  box2recordf_prefix_string: "{{target_protein_name}}/dockresult/{{target_protein_name}}box2_"
 
 # ==============================================================================
 # 步骤 7: 进行对接
-# 命令:
-# mkdir ../ALK1/fragstruct_
-# python ./splitfragstruct.py --input_file ../ALK1/fragstruct --output_prefix ../ALK1/fragstruct_/fragstruct --n_parts 2
-# ... (其他 splitfragstruct.py 调用)
-# python ./dock.py --num_tasks 2 --fixed_pdb ../ALK1/box1.pdb ...
 # ==============================================================================
 step7_perform_docking:
-  enabled: true
-  tools_dir: "Tools/" # 包含 splitfragstruct.py 和 dock.py 的目录
-  docking_base_dir: "ALK1/" # 对接相关的输出目录的父目录
-  split_n_parts: 2 # 分割成多少份
-  dock_num_tasks: 2 # 每个 box 对接任务的数量，也是并行进程数
+  enabled: True
+  tools_dir: "Tools/"
+  docking_base_dir: "{{target_protein_name}}/"
+  split_n_parts: 2
+  dock_num_tasks: 2
   
-  # box1 对接配置
-  box1_fixed_pdb: "ALK1/box1.pdb"
-  box1_fixed_wat_pdb: "ALK1/box1wat.pdb"
-  box1_output_prefix: "box1recordf" # output_prefix_name
+  box1_fixed_pdb: "{{target_protein_name}}/box1.pdb"
+  box1_fixed_wat_pdb: "{{target_protein_name}}/box1wat.pdb"
+  box1_output_prefix: "box1recordf"
   
-  # box2 对接配置
-  box2_fixed_pdb: "ALK1/box2.pdb"
-  box2_fixed_wat_pdb: "ALK1/box2wat.pdb"
-  box2_output_prefix: "box2recordf" # output_prefix_name
+  box2_fixed_pdb: "{{target_protein_name}}/box2.pdb"
+  box2_fixed_wat_pdb: "{{target_protein_name}}/box2wat.pdb"
+  box2_output_prefix: "box2recordf"
   
-  # SDOCK 共同参数 (注意这里是字符串，脚本会自行分割)
-  sdock_common_params: "-c 0.20 -x 12 -B 1 -p 0 -r SDOCK2.0-restrict/so3layer_648.qua -n 10 -d 1.3"
-  sdock_executable: "SDOCK2.0-restrict/sdock" # SDOCK 可执行文件路径
+  sdock_common_params: "-c 0.20 -x 12 -B 1 -p 0 -r {{sdock_base_dir}}/so3layer_648.qua -n 10 -d 1.3"
+  sdock_executable: "{{sdock_base_dir}}/sdock"
 
 # ==============================================================================
 # 步骤 8: 每个 box 选取前 N 个最佳结果
-# 命令:
-# python ./getbestdocking.py --recordf ../ALK1/box2recordf --output_path ../ALK1/box2bestdocking --top_n 20
-# python ./getbestdocking.py --recordf ../ALK1/box1recordf --output_path ../ALK1/box1bestdocking --top_n 20
-# 注意: getbestdocking.py 脚本需要存在于 ${project_base_dir}/Tools/ 目录下
 # ==============================================================================
 step8_select_top_n_per_box:
-  enabled: true
+  enabled: True
   script_path: "Tools/getbestdocking.py"
   top_n: 20
-  box1_recordf: "ALK1/box1recordf"
-  box1_output_path: "ALK1/box1bestdocking"
-  box2_recordf: "ALK1/box2recordf"
-  box2_output_path: "ALK1/box2bestdocking"
+  box1_recordf: "{{target_protein_name}}/box1recordf"
+  box1_output_path: "{{target_protein_name}}/box1bestdocking"
+  box2_recordf: "{{target_protein_name}}/box2recordf"
+  box2_output_path: "{{target_protein_name}}/box2bestdocking"
 
 # ==============================================================================
 # 步骤 9: 生成 docking 结果 (复杂模型)
-# 命令:
-# ../utility/genBuildcommand ../ALK1/box1bestdocking ../ALK1/genbox1frag.sh ../SDOCK2.0-restrict/build ../ALK1/box1.pdb ../ALK1/dockmodel ../SDOCK2.0-restrict/so3layer_648.qua 0,0,0
-# ... (其他命令)
 # ==============================================================================
 step9_generate_complex_models:
-  enabled: true
-  utility_dir: "utility/" # 包含 genBuildcommand 的目录
-  sdock_restrict_dir: "SDOCK2.0-restrict/" # SDOCK 可执行文件所在的目录 (用于 build)
-  dockmodel_dir: "ALK1/dockmodel" # 将创建此目录
-  so3layer_qua: "SDOCK2.0-restrict/so3layer_648.qua"
+  enabled: True
+  utility_dir: "utility/"
+  sdock_restrict_dir: "{{sdock_base_dir}}"
+  dockmodel_dir: "{{target_protein_name}}/dockmodel"
+  so3layer_qua: "{{sdock_base_dir}}/so3layer_648.qua"
 
-  # Box1 build command
-  box1_bestdocking: "ALK1/box1bestdocking"
-  box1_gen_script: "ALK1/genbox1frag.sh"
-  box1_fixed_pdb: "ALK1/box1.pdb"
-  box1_m_param: "0,0,0" # for genBuildcommand
+  box1_bestdocking: "{{target_protein_name}}/box1bestdocking"
+  box1_gen_script: "{{target_protein_name}}/genbox1frag.sh"
+  box1_fixed_pdb: "{{target_protein_name}}/box1.pdb"
+  box1_m_param: "0,0,0"
 
-  # Box2 build command
-  box2_bestdocking: "ALK1/box2bestdocking"
-  box2_gen_script: "ALK1/genbox2frag.sh"
-  box2_fixed_pdb: "ALK1/box2.pdb"
-  box2_m_param: "-12.022,0,0" # for genBuildcommand
+  box2_bestdocking: "{{target_protein_name}}/box2bestdocking"
+  box2_gen_script: "{{target_protein_name}}/genbox2frag.sh"
+  box2_fixed_pdb: "{{target_protein_name}}/box2.pdb"
+  box2_m_param: "-12.022,0,0"
 
-  # getfragpair command (Assumed to be the C executable based on user's last example)
-  getfragpair_exec: "utility/getfragpair" # getfragpair 可执行文件路径
-  fragpair_score_arg: "-56"
+  getfragpair_exec: "Tools/getfragpair.py" # <--- 指向 Python 封装脚本
+  fragpair_score_arg: "-40"
   fragpair_length_arg: "8"
-  fragpair_output_file: "ALK1/ALK1dockfragpair" # 最终输出文件
+  fragpair_output_file: "{{target_protein_name}}/{{target_protein_name}}dockfragpair"
+
 
 # ==============================================================================
 # 步骤 10: Find linker
-# 命令: mkdir ../ALK1/fraglinking; python fraglink.py
-# 注意: fraglink.py 脚本需要存在于 ${project_base_dir}/Tools/ 目录下
 # ==============================================================================
 step10_find_linker:
-  enabled: true
+  enabled: True
   tools_dir: "Tools/"
-  fraglinking_dir: "ALK1/fraglinking" # 将创建此目录
-  fraglink_script: "fraglink.py" # 假设 fraglink.py 不需要参数
+  fraglinking_dir: "{{target_protein_name}}/fraglinking" # fraglink.py 的输出目录
+  fraglink_script: "fraglink.py" # 假设 fraglink.py 的文件名
+
+  # fraglink.py 的命令行参数
+  pair_list_file: "{{target_protein_name}}/{{target_protein_name}}dockfragpair" # step9 的输出
+  target_pdb_file: "{{target_protein_name}}/box1.pdb" # 假设目标 PDB 是 box1.pdb
+  tripep_geo_dir: "{{target_protein_name}}/fragtermgeo/tripep" # 假设这些目录存在
+  tetrapep_geo_dir: "{{target_protein_name}}/fragtermgeo/tetrapep"
+  pentpep_geo_dir: "{{target_protein_name}}/fragtermgeo/pentpep"
+  fraglib_dir: "{{target_protein_name}}/fraglib" # 片段库目录
+  output_prefix: "{{target_protein_name}}fraglink" # fraglink.py 输出文件的前缀，例如 Testfraglink_1.txt
+  max_workers: 1 # fraglink.py 的并行进程数，根据需要调整
+  debug_mode: true # 是否开启 debug 模式
+  combined_output_log: "{{target_protein_name}}/run_error_log.txt" # fraglink.py 的错误日志
+  progress_log_file: "{{target_protein_name}}/run_progress.log" # fraglink.py 的进度日志
 
 # ==============================================================================
 # 步骤 11: Assemble Cyc
-# 命令:
-# mkdir ../ALK1/AssembledCyc
-# python ./assemblecyc.py --fraglinking_dir ../ALK1/fraglinking/ --assembled_cyc_dir ../ALK1/AssembledCyc/
-# ../utility/SelectBuildcomplex ../ALK1/AssembledCyc/ALK1Cyc_4.pdb -55.0 2 -55.0 3 ../ALK1/complexmodel/ ../ALK1/box1.pdb
-# 注意: assemblecyc.py 和 SelectBuildcomplex 脚本需要存在于 ${project_base_dir}/Tools/ 和 ${project_base_dir}/utility/ 目录下
 # ==============================================================================
 step11_assemble_cyc:
-  enabled: true
+  enabled: True
   tools_dir: "Tools/"
-  utility_dir: "utility/" # 包含 SelectBuildcomplex 的目录
-  assembled_cyc_dir: "ALK1/AssembledCyc" # 将创建此目录
+  utility_dir: "utility/"
+  assembled_cyc_dir: "{{target_protein_name}}/AssembledCyc"
 
-  # assemblecyc.py parameters
   assemblecyc_script: "assemblecyc.py"
-  assemblecyc_fraglinking_dir: "ALK1/fraglinking/"
-  assemblecyc_output_dir: "ALK1/AssembledCyc/"
+  assemblecyc_fraglinking_dir: "{{target_protein_name}}/fraglinking/"
+  assemblecyc_output_dir: "{{target_protein_name}}/AssembledCyc/"
+  assemblecyc_input_prefix: "{{target_protein_name}}fraglink_"
+  assemblecyc_input_suffix: "" # 确保与 fraglink.py 实际输出的扩展名一致，如果无扩展名则为空字符串
+  assemblecyc_output_prefix: "{{target_protein_name}}Cyc_"
 
-  # SelectBuildcomplex parameters
+  dockmodel_dir: "{{target_protein_name}}/dockmodel"
+
   select_build_exec: "utility/SelectBuildcomplex"
-  select_build_input_dir: "ALK1/AssembledCyc/" # 输入文件所在的目录
-  select_build_input_prefix: "ALK1Cyc_" # 输入文件前缀
-  select_build_input_suffix: ".pdb" # 输入文件后缀
-  select_build_complex_model_dir: "ALK1/complexmodel/" # 输出目录
-  select_build_fixed_pdb: "ALK1/box1.pdb"
+  select_build_input_dir: "{{target_protein_name}}/AssembledCyc/"
+  select_build_input_prefix: "{{target_protein_name}}Cyc_"
+  select_build_input_suffix: ".pdb"
+  select_build_complex_model_dir: "{{target_protein_name}}/complexmodel/"
+  select_build_fixed_pdb: "{{target_protein_name}}/box1.pdb"
   select_build_param1_score: -55.0
   select_build_param2_int: 2
   select_build_param3_score: -55.0
   select_build_param4_int: 3
+  select_build_output_prefix: "complex"

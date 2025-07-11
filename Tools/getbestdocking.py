@@ -4,60 +4,73 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def process_docking_file(file_path, filter_rank_enabled):
-    results = []
-    current_peptide = file_path
-    pending_data = None
+    # Use a dictionary to store the best score for each unique combination of (peptide, file_path, model_no)
+    # Key: (peptide, model_no) -> Value: (score, file_path)
+    # We include file_path in the value so we can reconstruct the full tuple later.
+    best_results_for_file = {}
+    current_peptide = file_path # Initialize with file_path as a fallback
 
     try:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
+                # Update current_peptide from "Protein B: mobile" line
                 if line.startswith("   Protein B: mobile"):
                     current_peptide = line.split()[-1]
-                    print(current_peptide)
-                    continue
+                    continue # Move to the next line
 
                 line_stripped = line.strip()
                 if not line_stripped or line_stripped.startswith('%') or line_stripped.startswith('[source'):
-                    continue
-                
+                    continue # Skip empty lines, comments, and source lines
+
+                # Attempt to parse lines containing model_no, model_rank, and score
                 try:
-                    if ':' in line_stripped and pending_data:
-                        score_str = line_stripped.split(':')[0].strip()
-                        score = float(score_str)
-                        model_no, model_rank = pending_data
-                        
-                        if not (filter_rank_enabled and model_rank > 1):
-                            results.append((score, current_peptide, file_path, model_no))
-                        
-                        pending_data = None
-                        continue
-
+                    # Check for lines where model_no, model_rank, and score are present
+                    # Example: "1  1 -35.817 : some other info"
                     parts = line_stripped.split()
-                    model_no = int(parts[0])
-                    model_rank = int(parts[1])
+                    if len(parts) >= 3: # Ensure there are enough parts for model, rank, and score
+                        model_no = int(parts[0])
+                        model_rank = int(parts[1])
+                        
+                        # Find the score part. It's usually the third part if no ':'
+                        # Or the part before ':' if ':' exists.
+                        score_str_candidate = parts[2]
+                        if ':' in line_stripped:
+                            # If colon exists, take the part before it and then get the last number
+                            before_colon = line_stripped.split(':')[0]
+                            score_str = before_colon.strip().split()[-1]
+                        else:
+                            score_str = score_str_candidate # Assume it's the third part
 
-                    pending_data = (model_no, model_rank)
-
-                    if ':' in line_stripped:
-                        before_colon = line_stripped.split(':')[0]
-                        score_str = before_colon.split()[-1]
                         score = float(score_str)
                         
+                        # Apply rank filter
                         if not (filter_rank_enabled and model_rank > 1):
-                            results.append((score, current_peptide, file_path, model_no))
-                        
-                        pending_data = None
-
+                            # Define a unique key for the dictionary
+                            unique_key = (current_peptide, file_path, model_no)
+                            
+                            # If this combination is new, or if the current score is better than recorded
+                            if unique_key not in best_results_for_file or score < best_results_for_file[unique_key][0]:
+                                best_results_for_file[unique_key] = (score, model_no)
+                                
                 except (ValueError, IndexError):
-                    pending_data = None
-                    continue
+                    # This block handles lines that don't fit the expected parsing pattern for scores
+                    # and model numbers, such as pure "model_no model_rank" lines without a score,
+                    # or other malformed lines.
+                    continue # Skip to the next line if parsing fails
 
     except FileNotFoundError:
         print(f"Warning: File {file_path} not found, skipping.")
     except Exception as e:
         print(f"Error: Unknown error processing file {file_path}: {e}")
         
-    return results
+    # Convert the dictionary back to a list of tuples in the desired format
+    # (score, peptide_path, source_file_path, model_no)
+    final_results = []
+    for (peptide_path, source_file_path, model_no), (score, _) in best_results_for_file.items():
+        final_results.append((score, peptide_path, source_file_path, model_no))
+        
+    return final_results
+
 
 def main():
     parser = argparse.ArgumentParser(description="Processes SDOCK output files to find top N results.")
@@ -122,6 +135,12 @@ def main():
     try:
         with open(output_path, 'w') as f_out:
             for score, peptide_path, source_file_path, model_no in best_results:
+                # The alignment in the C code was %s %s %2d %8.3f
+                # For Python, we'll try to match the column widths.
+                # peptide_path: Left-aligned, 80 characters
+                # source_file_path: Left-aligned, 80 characters
+                # model_no: Right-aligned, 3 characters
+                # score: Right-aligned, 8.3f (8 characters total, 3 decimal places)
                 f_out.write(f"{peptide_path:<80} {source_file_path:<80} {model_no:>3} {score:8.3f}\n")
     except IOError as e:
         print(f"Error: Could not write to output file '{output_path}': {e}")

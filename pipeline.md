@@ -1,5 +1,19 @@
-
-## 对接前处理
+## 一键运行版本：
+```bash
+mkdir ALK1
+```
+需要在ALK1中上传一个必要文件，即只包含靶蛋白的pdb文件。
+在config.yml修改参数：
+1. project_base_dir，修改为当前项目所在的目录。eg: "/data1/home/renxinyu/CycDockAssem_overwrite/"
+2. target_protein_name，文件夹的名称，用来后续生成其他必要文件是作为prefix。eg: "ALK1"
+3. sdock_base_dir，存储sdockc代码的文件夹。eg: "/data1/home/renxinyu/sdock/SDOCK2.0-restrict"
+4. preprocessed_fragments_path，存储预处理片段的文件夹。eg: node5:"/data1/home/renxinyu/data/pre_fragments_all";node6:"/data1/home/renxinyu/data/sdock/pre_fragments_all" 注意：pre_fragments_all这个名称与后面代码存在耦合，不能更改。
+5. water_fragments_path，存储水片段的文件夹。eg: node5:"/data1/home/renxinyu/data/water_fragments_all";node6:"/data1/home/renxinyu/data/sdock/water_fragments_all" 注意：water_fragments_all这个名称与后面代码存在耦合，不能更改。
+6. 其他参数都是和dock，link相关的参数，如果没有特殊需求，使用默认值就可以。
+```bash
+python ./pipeline.py ./config.yml
+```
+## 逐步运行版本：
 ### 1.下载pdb文件
 ```bash
 cd ./Tools
@@ -95,4 +109,3 @@ mkdir ../ALK1/AssembledCyc
 python ./assemblecyc.py --fraglinking_dir ../ALK1/fraglinking/ --assembled_cyc_dir ../ALK1/AssembledCyc/
 ../utility/SelectBuildcomplex ../ALK1/AssembledCyc/ALK1Cyc_4.pdb -55.0 2 -55.0 3 ../ALK1/complexmodel/ ../ALK1/box1.pdb
 ```
-

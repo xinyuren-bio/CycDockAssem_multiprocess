@@ -5,42 +5,19 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import heapq
 import glob
 import traceback
-
-from data_structures import Fragment, FullAtomFragment
+import argparse # 新增导入 argparse
+import logging
+from data_structures import Fragment, FullAtomFragment # 假设这些文件在同一目录或PYTHONPATH中
 from geometry_np import distance, angle, dihedral
 from superpose_np import fit_terminal
 from scoring import check_steric, check_steric2_np, dock_to_target, pepterdock
 
 
 # ==============================================================================
-# ===                           1. 配置区                                  ===
+# ===                           1. 配置区 (现在从命令行参数或默认值获取)      ===
 # ==============================================================================
-CONFIG = {
-    'DEBUG_MODE': True,
-    'MAX_WORKERS': 1,
-    'PAIR_LIST_FILE': "../ALK1/ALK1dockfragpair",
-    'TARGET_PDB_FILE' : "../ALK1/box1.pdb",
-    'TRIPEP_GEO_DIR' : "../ALK1/fragtermgeo/tripep",
-    'TETRAPEP_GEO_DIR' : "../ALK1/fragtermgeo/tetrapep",
-    'PENTPEP_GEO_DIR' : "../ALK1/fragtermgeo/pentpep",
-    'FRAGLIB_DIR' : "../ALK1/fraglib",
-    'OUTPUT_PREFIX': "ALK1fraglink",
-    'OUTPUT_DIR': "../ALK1/fraglinking",
-    'COMBINED_OUTPUT_LOG': "../ALK1/run_error_log.txt",  # 错误记录
-    'PROGRESS_LOG_FILE': "../ALK1/run_progress.log", # 进度记录
-    'ACCEPT_RMSD': 2.0,
-    'ACCEPT_STERIC': 4.0,
-    'ACCEPT_DOCKING': 2.0,
-    'BESTPATCHNUM': 500,
-    'BESTNUM': 30,
-    'BESTCLUSTERNUM': 4,
-    'CULSTERRMSD': 0.6,
-    'GEO_LIB_PARAMS': {'DISDIFF': 0.5, 'ANG1DIFF': 15.0, 'ANG2DIFF': 15.0, 'DIHDIFF': 35.0},
-    'TERMINAL_DIS_CA_MIN': 4.5,
-    'TERMINAL_DIS_CA_MAX3': 7.5,
-    'TERMINAL_DIS_CA_MAX4': 10.5,
-    'TERMINAL_DIS_CA_MAX5': 13.5,
-}
+# CONFIG 字典将由 argparse 填充或使用默认值
+CONFIG = {}
 
 def calculate_gap_geometry(p1, p2):
     required_keys = ['N_N', 'CA_N', 'C_N', 'N_C', 'CA_C', 'C_C']
@@ -201,7 +178,7 @@ def cluster_results(all_best_candidates, config):
 def process_pair(args):
     pair_index, frag1_path, frag2_path, frag_scores, target_coords_full, config = args
     
-    if config['DEBUG_MODE']: print(f"\n--- [START] Pair {pair_index}: {os.path.basename(frag1_path)} vs {os.path.basename(frag2_path)} ---", flush=True)
+    if config['DEBUG_MODE']: logging.info(f"\n--- [START] Pair {pair_index}: {os.path.basename(frag1_path)} vs {os.path.basename(frag2_path)} ---")
 
     p1_geom = Fragment(frag1_path)
     p2_geom = Fragment(frag2_path)
@@ -218,7 +195,7 @@ def process_pair(args):
     
     linker_candidates = perform_linker_search(geo_params, config)
     if not linker_candidates: return []
-    if config['DEBUG_MODE']: print(f"  [INFO] Found {len(linker_candidates)} candidates to evaluate.", flush=True)
+    if config['DEBUG_MODE']: logging.info(f"  [INFO] Found {len(linker_candidates)} candidates to evaluate.")
 
     top_candidates = {0: [], 1: []}
     candidate_id_counter = 0
@@ -251,11 +228,11 @@ def process_pair(args):
             elif direction == 1 and sup_type == 1:
                 steric_score, ter_flags = check_steric2_np(patch, p2_geom, p1_geom, config)
             
-            # if config['DEBUG_MODE']: print(f"                                      | Steric_score: {steric_score:.4f}", flush=True)
+            # if config['DEBUG_MODE']: logging.info(f"                                      | Steric_score: {steric_score:.4f}")
 
             if steric_score < config['ACCEPT_STERIC']:
                 docking_score = dock_to_target(patch, target_coords_full, config)
-                # if config['DEBUG_MODE']: print(f"                                      | Docking_score: {docking_score:.4f}", flush=True)
+                # if config['DEBUG_MODE']: logging.info(f"                                      | Docking_score: {docking_score:.4f}")
 
                 if docking_score < config['ACCEPT_DOCKING']:
                     terminalscore = 0.0
@@ -265,11 +242,11 @@ def process_pair(args):
                     else: # direction == 1
                         if ter_flags[0] == 1: terminalscore += pepterdockscore[2]
                         if ter_flags[1] == 1: terminalscore += pepterdockscore[1]
-                    # if config['DEBUG_MODE']: print(f"                                      | Terminal_score: {terminalscore:.4f}", flush=True)
+                    # if config['DEBUG_MODE']: logging.info(f"                                      | Terminal_score: {terminalscore:.4f}")
                     
                     linker_len_penalty = (candidate_info['len_type'] - 3) * 2.0
                     final_score = (rmsd * 4.0) + steric_score + docking_score + linker_len_penalty + terminalscore
-                    # if config['DEBUG_MODE']: print(f"                                      | Final_score: {final_score:.4f}", flush=True)
+                    # if config['DEBUG_MODE']: logging.info(f"                                      | Final_score: {final_score:.4f}")
                     
                     candidate_data = {
                         'name': candidate_info['name'], 'score': final_score, 'rmsd': rmsd,
@@ -303,7 +280,7 @@ def process_pair(args):
     all_final_reps.sort(key=lambda x: (x['direction'], x['cluster_id']))
     
     if config['DEBUG_MODE']: 
-        print(f"  [SUCCESS] Pair {pair_index}: Found {len(all_final_reps)} final candidates in total after separate clustering.", flush=True)
+        logging.info(f"  [SUCCESS] Pair {pair_index}: Found {len(all_final_reps)} final candidates in total after separate clustering.")
     
     return all_final_reps
 
@@ -312,44 +289,63 @@ def write_fraglink_output(final_candidates, config, job_args):
         return
 
     pair_index, frag1_path, frag2_path, frag_scores = job_args[0:4]
+    
+    # 确保输出目录存在
+    os.makedirs(config['OUTPUT_DIR'], exist_ok=True)
+
+    # 动态构建输出文件名，包含 pair_index
     output_filename = os.path.join(
         config['OUTPUT_DIR'], 
-        f"{config['OUTPUT_PREFIX']}_{pair_index}" 
+        f"{config['OUTPUT_PREFIX']}_{pair_index}" # 添加 .txt 扩展名
     )
     
-    with open(output_filename, 'w') as f:
-        for candidate in final_candidates:
-            cluster_id = candidate['cluster_id']
-            patch = candidate['patch']
-            
-            f.write(f"TITLE   {candidate['direction'] + 1}  {cluster_id}  {candidate['sup_type'] + 1}\n")
+    try:
+        with open(output_filename, 'w') as f:
+            for candidate in final_candidates:
+                cluster_id = candidate['cluster_id']
+                patch = candidate['patch']
+                
+                f.write(f"TITLE   {candidate['direction'] + 1}  {cluster_id}  {candidate['sup_type'] + 1}\n")
 
-            if candidate['direction'] == 0:
-                dock1_flag, dock1_score, dock1_path = candidate['ter_flags'][0], frag_scores[0], frag1_path
-                dock2_flag, dock2_score, dock2_path = candidate['ter_flags'][1], frag_scores[1], frag2_path
-            else:
-                dock1_flag, dock1_score, dock1_path = candidate['ter_flags'][0], frag_scores[1], frag2_path
-                dock2_flag, dock2_score, dock2_path = candidate['ter_flags'][1], frag_scores[0], frag1_path
-            
-            f.write(f"REMARK  dock1 {dock1_flag:2d} {dock1_score:8.3f} {dock1_path}\n")
-            f.write(f"REMARK  dock2 {dock2_flag:2d} {dock2_score:8.3f} {dock2_path}\n")
-            f.write(f"REMARK  link {config['FRAGLIB_DIR']}/{candidate['name']}\n")
-            f.write(f"REMARK  score   {candidate['score']:8.3f} {candidate['rmsd']:8.3f} {candidate['steric']:8.3f} {candidate['docking']:8.3f} {candidate['terminalscore']:8.3f}\n")
-            
-            atom_serial = 1
-            for res_id in patch.residues:
-                res_info = patch.residue_info[res_id]
-                res_name = res_info['res_name']
-                chain_id = res_id[0] if res_id[0] else 'A'
-                res_seq = res_id[1]
-                for atom_idx in range(res_info['start_index'], res_info['end_index'] + 1):
-                    atom_name = patch.atom_names[atom_idx]
-                    x, y, z = patch.coords[atom_idx]
-                    atom_line = (f"ATOM  {atom_serial:5d}  {atom_name:<4s}{res_name:>3s} {chain_id}{res_seq:4d}    "
-                                 f"{x:8.3f}{y:8.3f}{z:8.3f}\n")
-                    f.write(atom_line)
-                    atom_serial += 1
-            f.write("END\n")
+                if candidate['direction'] == 0:
+                    dock1_flag, dock1_score, dock1_path = candidate['ter_flags'][0], frag_scores[0], frag1_path
+                    dock2_flag, dock2_score, dock2_path = candidate['ter_flags'][1], frag_scores[1], frag2_path
+                else:
+                    dock1_flag, dock1_score, dock1_path = candidate['ter_flags'][0], frag_scores[1], frag2_path
+                    dock2_flag, dock2_score, dock2_path = candidate['ter_flags'][1], frag_scores[0], frag1_path
+                
+                f.write(f"REMARK  dock1 {dock1_flag:2d} {dock1_score:8.3f} {dock1_path}\n")
+                f.write(f"REMARK  dock2 {dock2_flag:2d} {dock2_score:8.3f} {dock2_path}\n")
+                f.write(f"REMARK  link {config['FRAGLIB_DIR']}/{candidate['name']}\n")
+                f.write(f"REMARK  score   {candidate['score']:8.3f} {candidate['rmsd']:8.3f} {candidate['steric']:8.3f} {candidate['docking']:8.3f} {candidate['terminalscore']:8.3f}\n")
+                
+                atom_serial = 1
+                for res_id in patch.residues:
+                    res_info = patch.residue_info[res_id]
+                    res_name = res_info['res_name']
+                    chain_id = res_id[0] if res_id[0] else 'A'
+                    res_seq = res_id[1]
+                    for atom_idx in range(res_info['start_index'], res_info['end_index'] + 1):
+                        atom_name = patch.atom_names[atom_idx]
+                        x, y, z = patch.coords[atom_idx]
+                        atom_line = (f"ATOM  {atom_serial:5d}  {atom_name:<4s}{res_name:>3s} {chain_id}{res_seq:4d}    "
+                                     f"{x:8.3f}{y:8.3f}{z:8.3f}\n")
+                        f.write(atom_line)
+                        atom_serial += 1
+                f.write("END\n")
+        logging.info(f"写入文件: {output_filename}") # 确认写入
+    except IOError as e:
+        logging.error(f"错误: 无法写入输出文件 '{output_filename}': {e}")
+        # 写入错误日志
+        with open(config['COMBINED_OUTPUT_LOG'], 'a') as f_err:
+            f_err.write(f"IOError: 无法写入 {output_filename}: {e}\n")
+            traceback.print_exc(file=f_err)
+    except Exception as e:
+        logging.error(f"错误: 写入文件 '{output_filename}' 时发生未知错误: {e}")
+        with open(config['COMBINED_OUTPUT_LOG'], 'a') as f_err:
+            f_err.write(f"未知错误: 写入 {output_filename}: {e}\n")
+            traceback.print_exc(file=f_err)
+
 
 def format_time(seconds):
     if seconds is None:
@@ -364,6 +360,65 @@ def main():
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)
         
+    # 定义命令行参数
+    parser = argparse.ArgumentParser(description="Fraglink Python version for finding linkers.")
+    parser.add_argument("--pair_list_file", type=str, required=True,
+                        help="Path to the file containing pairs of fragment paths and scores.")
+    parser.add_argument("--target_pdb_file", type=str, required=True,
+                        help="Path to the target PDB file (e.g., box1.pdb).")
+    parser.add_argument("--tripep_geo_dir", type=str, required=True,
+                        help="Path to the tripeptide geometry directory.")
+    parser.add_argument("--tetrapep_geo_dir", type=str, required=True,
+                        help="Path to the tetrapeptide geometry directory.")
+    parser.add_argument("--pentpep_geo_dir", type=str, required=True,
+                        help="Path to the pentapeptide geometry directory.")
+    parser.add_argument("--fraglib_dir", type=str, required=True,
+                        help="Path to the fragment library directory.")
+    parser.add_argument("--output_prefix", type=str, default="fraglink_pair",
+                        help="Prefix for output linker files (e.g., 'fraglink_pair').")
+    parser.add_argument("--output_dir", type=str, required=True,
+                        help="Directory to save output linker files.")
+    parser.add_argument("--max_workers", type=int, default=os.cpu_count(),
+                        help="Maximum number of parallel processes (default: CPU count).")
+    parser.add_argument("--debug_mode", action='store_true',
+                        help="Enable debug mode for more verbose output.")
+    parser.add_argument("--combined_output_log", type=str, default="run_error_log.txt",
+                        help="File to log errors and exceptions.")
+    parser.add_argument("--progress_log_file", type=str, default="run_progress.log",
+                        help="File to log progress messages.")
+
+    args = parser.parse_args()
+
+    # 将命令行参数填充到 CONFIG 字典
+    global CONFIG # 声明使用全局 CONFIG
+    CONFIG['DEBUG_MODE'] = args.debug_mode
+    CONFIG['MAX_WORKERS'] = args.max_workers
+    CONFIG['PAIR_LIST_FILE'] = args.pair_list_file
+    CONFIG['TARGET_PDB_FILE'] = args.target_pdb_file
+    CONFIG['TRIPEP_GEO_DIR'] = args.tripep_geo_dir
+    CONFIG['TETRAPEP_GEO_DIR'] = args.tetrapep_geo_dir
+    CONFIG['PENTPEP_GEO_DIR'] = args.pentpep_geo_dir
+    CONFIG['FRAGLIB_DIR'] = args.fraglib_dir
+    CONFIG['OUTPUT_PREFIX'] = args.output_prefix
+    CONFIG['OUTPUT_DIR'] = args.output_dir
+    CONFIG['COMBINED_OUTPUT_LOG'] = args.combined_output_log
+    CONFIG['PROGRESS_LOG_FILE'] = args.progress_log_file
+    
+    # 硬编码的常量 (如果它们不通过命令行参数提供)
+    CONFIG['ACCEPT_RMSD'] = 2.0
+    CONFIG['ACCEPT_STERIC'] = 4.0
+    CONFIG['ACCEPT_DOCKING'] = 2.0
+    CONFIG['BESTPATCHNUM'] = 500
+    CONFIG['BESTNUM'] = 30
+    CONFIG['BESTCLUSTERNUM'] = 4
+    CONFIG['CULSTERRMSD'] = 0.6
+    CONFIG['GEO_LIB_PARAMS'] = {'DISDIFF': 0.5, 'ANG1DIFF': 15.0, 'ANG2DIFF': 15.0, 'DIHDIFF': 35.0}
+    CONFIG['TERMINAL_DIS_CA_MIN'] = 4.5
+    CONFIG['TERMINAL_DIS_CA_MAX3'] = 7.5
+    CONFIG['TERMINAL_DIS_CA_MAX4'] = 10.5
+    CONFIG['TERMINAL_DIS_CA_MAX5'] = 13.5
+
+    # 重新配置 logging，确保使用命令行参数提供的日志文件路径
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(message)s',
@@ -373,6 +428,7 @@ def main():
             logging.StreamHandler()
         ]
     )
+
 
     logging.info("--- Fraglink Python版开始执行 ---")
     start_time = time.time()
@@ -400,16 +456,33 @@ def main():
     
     for i, line in enumerate(all_pairs):
         parts = line.split()
-        if len(parts) < 4: continue
+        # 确保行至少有4部分：frag1_path, frag2_path, score1, score2
+        if len(parts) < 4: 
+            logging.warning(f"警告: 跳过无效行 (少于4部分): {line.strip()}")
+            continue
         try:
             frag1_path = parts[0]; frag2_path = parts[1]
             frag_scores = [float(parts[2]), float(parts[3])]
+            
+            # 检查文件是否存在，如果不存在则跳过此任务
+            if not os.path.exists(frag1_path):
+                logging.warning(f"警告: 片段文件 '{frag1_path}' 不存在，跳过配对任务 {i+1}。")
+                continue
+            if not os.path.exists(frag2_path):
+                logging.warning(f"警告: 片段文件 '{frag2_path}' 不存在，跳过配对任务 {i+1}。")
+                continue
+
             jobs.append((i + 1, frag1_path, frag2_path, frag_scores, target_coords_full, CONFIG))
-        except ValueError: continue
+        except ValueError as ve:
+            logging.warning(f"警告: 解析行中的分数时出错，跳过行 {i+1}: {line.strip()} - {ve}")
+            continue
+        except Exception as e:
+            logging.error(f"错误: 解析配对列表行时发生未知错误，跳过行 {i+1}: {line.strip()} - {e}")
+            continue
     
     total_jobs = len(jobs)
     if total_jobs == 0:
-        logging.error("错误: 未能从输入文件中解析出任何有效的配对任务。")
+        logging.error("错误: 未能从输入文件中解析出任何有效的配对任务。请检查PAIR_LIST_FILE内容。")
         return
 
     logging.info(f"成功解析了 {total_jobs} 个配对任务。")
@@ -449,6 +522,10 @@ def main():
 
     except Exception as e:
         logging.error(f"\n主进程发生严重错误: {e}")
+        # 确保主进程错误也写入错误日志文件
+        with open(CONFIG['COMBINED_OUTPUT_LOG'], 'a') as f_err:
+            f_err.write(f"主进程错误: {e}\n")
+            traceback.print_exc(file=f_err)
         return
 
     total_duration_str = format_time(time.time() - start_time)
@@ -456,5 +533,6 @@ def main():
     logging.info(f"--- 所有任务执行完毕！总耗时: {total_duration_str} ---")
 
 if __name__ == "__main__":
+    # 确保 logging 模块在 main() 内部配置
+    # 这样可以确保命令行参数被解析后才设置日志文件
     main()
-
