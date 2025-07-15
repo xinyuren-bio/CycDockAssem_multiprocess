@@ -2,7 +2,7 @@ import re
 import argparse
 
 def extract_and_prepend_to_file(input_filename, output_filename, prefix_string):
-    pattern = re.compile(r'pre_[tTP]p_(.{10})\.pdb')
+    pattern = re.compile(r'pre_(.{13})\.pdb')
 
     try:
         with open(input_filename, 'r') as infile:
