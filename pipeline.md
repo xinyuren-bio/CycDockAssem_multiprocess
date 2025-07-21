@@ -141,3 +141,15 @@ mkdir ../ALK1/AssembledCyc
 python ./assemblecyc.py --fraglinking_dir ../ALK1/fraglinking/ --assembled_cyc_dir ../ALK1/AssembledCyc/
 ../utility/SelectBuildcomplex ../ALK1/AssembledCyc/ALK1Cyc_4.pdb -55.0 2 -55.0 3 ../ALK1/complexmodel/ ../ALK1/box1.pdb
 ```
+
+### 12.sequence design
+```bash
+# 使用MPNN对上面产生的pdb文件进行设计，得到设计好的.fa文件夹
+# 在gene_resfile.py中修改参数，将.fa文件夹路径修改为上面生成的.fa文件夹路径，并运行，得到Rosetta所需要的resfile文件
+python ./gene_resfile.py
+# 执行完上面的命令后，我们就可获得resfile文件，有了resfile文件，就可以开始进行序列设计了，可以执行这个bash脚本，里面有一些参数需要修改，可以根据脚本内部的参数注解进行相应的修改（参数都在脚本上方），修改完成后就可以直接运行。
+bash ./rosetta.sh
+# 运行结束，获得分数后，由于Rosetta产生的格式不方便绘图，这里提供了一个Python脚本可以帮助我们把得分提取到csv文件中，需要提供三个参数：i. 结果的保存路径  ii. refile文件的路径  iii. csv文件的保存路径及名称
+python ./rosetta_score2csv.py
+# 通过这行以上命令我们就可以获得一个csv文件，里面保存了 Rosetta 的得分，如果我们需要进行绘图比对不同序列他们dG之间分数的差异，我们可以执行以下命令，并且在python内部文件修改好相关的参数：
+python ./bin.py
