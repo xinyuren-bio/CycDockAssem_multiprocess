@@ -1,6 +1,36 @@
+## 编译：
+### 编译sdock
+```bash
+cd ~/fragdesign
+mkdir -p compiled_libs/fftw_install
+mkdir -p compiled_sources
+
+wget http://www.fftw.org/fftw-3.3.10.tar.gz -P compiled_sources/
+tar -xzf compiled_sources/fftw-3.3.10.tar.gz -C compiled_sources/
+cd compiled_sources/fftw-3.3.10/
+./configure --prefix=~/fragdesign/compiled_libs/fftw_install --enable-shared --enable-static
+make
+make install
+
+cd ~/fragdesign/SDOCK2.0-restrict
+export FFTW_HOME=/data1/home/renxinyu/fragdesign/compiled_libs/fftw_install
+export LD_LIBRARY_PATH="${FFTW_HOME}/lib" 
+进入SDOCK2.0-restrict文件夹，找到MAKEFILE文件，将FFTW_HOME修改为上面配置的FFTW_HOME。
+eg：FFTW_DIR        = /home/changsheng/Downloads/Softwares/MDL/SDOCK1p0/fftw-3.3.8 -> FFTW_DIR        = /data1/home/renxinyu/fragdesign/compiled_libs/fftw_install
+make
+cd ~/fragdesign/
+```
+### 编译其他工具：
+```bash
+cd ./utility
+bash ./readme.sh 
+```
+
+
+# 运行
 ## 一键运行版本：
 ```bash
-mkdir ALK1
+python ./pipeline.py ./config.yml
 ```
 需要在ALK1中上传一个必要文件，即只包含靶蛋白的pdb文件。
 在config.yml修改参数：
@@ -9,10 +39,12 @@ mkdir ALK1
 3. sdock_base_dir，存储sdockc代码的文件夹。eg: "/data1/home/renxinyu/sdock/SDOCK2.0-restrict"
 4. preprocessed_fragments_path，存储预处理片段的文件夹。eg: node5:"/data1/home/renxinyu/data/pre_fragments_all";node6:"/data1/home/renxinyu/data/sdock/pre_fragments_all" 注意：pre_fragments_all这个名称与后面代码存在耦合，不能更改。
 5. water_fragments_path，存储水片段的文件夹。eg: node5:"/data1/home/renxinyu/data/water_fragments_all";node6:"/data1/home/renxinyu/data/sdock/water_fragments_all" 注意：water_fragments_all这个名称与后面代码存在耦合，不能更改。
-6. 其他参数都是和dock，link相关的参数，如果没有特殊需求，使用默认值就可以。
-```bash
-python ./pipeline.py ./config.yml
-```
+6. ref1: "25.072,-20.981,-45.006"
+   ref2: "26.114,-32.317,-41.141"
+   ref3: "31.015,-30.723,-40.260"，要定义config.yml中step3三个原子的坐标，ref1-box1中心，ref2-box2中心，ref3-定义y轴。
+7. 其他参数都是和dock，link相关的参数，如果没有特殊需求，使用默认值就可以。
+
+
 ## 逐步运行版本：
 ### 1.下载pdb文件
 ```bash
