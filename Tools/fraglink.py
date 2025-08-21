@@ -1,538 +1,422 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+蛋白质片段链接程序 - Python版本 (预加载几何库 + 日志 + 并行)
+"""
+
 import os
-import time
+import sys
+import math
 import numpy as np
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import heapq
-import glob
-import traceback
-import argparse # 新增导入 argparse
+import multiprocessing
 import logging
-from data_structures import Fragment, FullAtomFragment # 假设这些文件在同一目录或PYTHONPATH中
-from geometry_np import distance, angle, dihedral
-from superpose_np import fit_terminal
-from scoring import check_steric, check_steric2_np, dock_to_target, pepterdock
+import time
+import datetime
+import copy
+from typing import List, Tuple, Dict
+from tqdm import tqdm
 
 
-# ==============================================================================
-# ===                           1. 配置区 (现在从命令行参数或默认值获取)      ===
-# ==============================================================================
-# CONFIG 字典将由 argparse 填充或使用默认值
-CONFIG = {}
+ACCEPTSTERIC = 4.0; ACCEPTTERSTERIC = 1.5; ACCEPTDOCKSTERIC = 5.0; ACCEPTRMSD = 0.8; ACCEPTDOCKING = 2.0; DISDIFF = 0.5; ANG1DIFF = 15; ANG2DIFF = 15; DIHDIFF = 35; BESTPATCHNUM = 500; BESTNUM = 30; BESTCLUSTERNUM = 3; CULSTERRMSD = 0.6; TODEG = lambda A: A * 57.295779513
 
-def calculate_gap_geometry(p1, p2):
-    required_keys = ['N_N', 'CA_N', 'C_N', 'N_C', 'CA_C', 'C_C']
-    for key in required_keys:
-        if p1.key_atom_indices.get(key) is None or p2.key_atom_indices.get(key) is None: return None
-    geo_params = {}
-    p1_coords = {key: p1.coords[idx] for key, idx in p1.key_atom_indices.items()}
-    p2_coords = {key: p2.coords[idx] for key, idx in p2.key_atom_indices.items()}
-    geo_params['tmdis_0'] = distance(p1_coords['CA_N'], p2_coords['CA_C'])
-    geo_params['ncaca_0'] = angle(p1_coords['N_N'], p1_coords['CA_N'], p2_coords['CA_C'])
-    geo_params['cacac_0'] = angle(p1_coords['CA_N'], p2_coords['CA_C'], p2_coords['C_C'])
-    geo_params['dih_0'] = dihedral(p1_coords['N_N'], p1_coords['CA_N'], p2_coords['CA_C'], p2_coords['C_C'])
-    geo_params['ncaca2_0'] = angle(p2_coords['N_C'], p2_coords['CA_C'], p1_coords['CA_N'])
-    geo_params['cacac2_0'] = angle(p2_coords['CA_C'], p1_coords['CA_N'], p1_coords['C_N'])
-    geo_params['dih2_0'] = dihedral(p2_coords['N_C'], p2_coords['CA_C'], p1_coords['CA_N'], p1_coords['C_N'])
-    geo_params['tmdis_1'] = distance(p2_coords['CA_N'], p1_coords['CA_C'])
-    geo_params['ncaca_1'] = angle(p2_coords['N_N'], p2_coords['CA_N'], p1_coords['CA_C'])
-    geo_params['cacac_1'] = angle(p2_coords['CA_N'], p1_coords['CA_C'], p1_coords['C_C'])
-    geo_params['dih_1'] = dihedral(p2_coords['N_N'], p2_coords['CA_N'], p1_coords['CA_C'], p1_coords['C_C'])
-    geo_params['ncaca2_1'] = angle(p1_coords['N_C'], p1_coords['CA_C'], p2_coords['CA_N'])
-    geo_params['cacac2_1'] = angle(p1_coords['CA_C'], p2_coords['CA_N'], p2_coords['C_N'])
-    geo_params['dih2_1'] = dihedral(p1_coords['N_C'], p1_coords['CA_C'], p2_coords['CA_N'], p2_coords['C_N'])
-    return geo_params
-
-def find_linkers(geo_lib_dir, typ, target_tmdis, target_ncaca, target_cacac, target_dih, config):
-    candidate_scores = []
-    geo_lib_params = config['GEO_LIB_PARAMS']
-    for dish in range(int(geo_lib_params['DISDIFF'] * 2000 + 1)):
-        d = target_tmdis + dish * 0.001 - geo_lib_params['DISDIFF']
-        filename_prefix = 'D' if typ == 0 else 'd'
-        geo_filepath = os.path.join(geo_lib_dir, f"{filename_prefix}{d:.3f}")
-        if not os.path.exists(geo_filepath): continue
+class Residue:
+    def __init__(self): self.start = 0; self.CA = 0; self.C = 0; self.N = 0; self.end = 0; self.nam = ""
+class Fragment:
+    def __init__(self): self.an = 0; self.xyz = np.zeros((100, 3), dtype=np.float64); self.nam = [""] * 100; self.resn = 0; self.res = [Residue() for _ in range(5)]; self.N = 0; self.NC = 0; self.C = 0; self.CN = 0; self.CAN = 0; self.CAC = 0
+class Geometry:
+    @staticmethod
+    def distance(x1: np.ndarray, x2: np.ndarray) -> float: return np.linalg.norm(x1 - x2)
+    @staticmethod
+    def distance2(x1: np.ndarray, x2: np.ndarray) -> float: return np.sum((x1 - x2) ** 2)
+    @staticmethod
+    def cal_angle(x1: np.ndarray, x2: np.ndarray, x3: np.ndarray) -> float:
+        v1 = x1 - x2; v2 = x3 - x2; norm_v1 = np.linalg.norm(v1); norm_v2 = np.linalg.norm(v2)
+        if norm_v1 == 0 or norm_v2 == 0: return 0.0
+        cos_angle = np.clip(np.dot(v1, v2) / (norm_v1 * norm_v2), -1.0, 1.0)
+        return TODEG(np.arccos(cos_angle))
+    @staticmethod
+    def cal_dih(x1: np.ndarray, x2: np.ndarray, x3: np.ndarray, x4: np.ndarray) -> float:
+        v1 = x2 - x1; v2 = x3 - x2; v3 = x4 - x3; n1 = np.cross(v1, v2); n2 = np.cross(v2, v3); norm_n1 = np.linalg.norm(n1); norm_n2 = np.linalg.norm(n2)
+        if norm_n1 == 0 or norm_n2 == 0: return 0.0
+        cos_dih = np.clip(np.dot(n1, n2) / (norm_n1 * norm_n2), -1.0, 1.0)
+        dih_rad = np.arccos(cos_dih)
+        if np.dot(n1, v3) < 0: dih_rad = -dih_rad
+        return TODEG(dih_rad)
+class Superpose:
+    @staticmethod
+    def get_center(x: np.ndarray) -> np.ndarray: return np.mean(x, axis=0)
+    @staticmethod
+    def do_rot(x: np.ndarray, R: np.ndarray) -> np.ndarray: return x @ R.T
+    @staticmethod
+    def fit_terminal(target_coords: np.ndarray, mobile_coords: np.ndarray) -> Tuple[float, np.ndarray, np.ndarray]:
+        center_target = Superpose.get_center(target_coords); center_mobile = Superpose.get_center(mobile_coords); target_centered = target_coords - center_target; mobile_centered = mobile_coords - center_mobile
+        H = mobile_centered.T @ target_centered; U, S, Vt = np.linalg.svd(H); R = Vt.T @ U.T
+        if np.linalg.det(R) < 0: Vt[-1, :] *= -1; R = Vt.T @ U.T
+        mobile_rotated = Superpose.do_rot(mobile_centered, R); num_atoms = target_centered.shape[0]
+        if num_atoms == 0: return 0.0, R, center_mobile
+        rmsd = np.sqrt(np.sum((target_centered - mobile_rotated) ** 2) / num_atoms)
+        return rmsd, R, center_mobile
+class PDBReader:
+    @staticmethod
+    def getxyz(line: str) -> np.ndarray: return np.array([float(line[30+8*i : 38+8*i]) for i in range(3)], dtype=np.float64)
+    @staticmethod
+    def _read_fragment_internal(filename: str, backbone_only: bool) -> Fragment:
+        p = Fragment(); n = 0; rn = 0; allowed_atoms = {"N", "CA", "C", "O"} if backbone_only else None
         try:
-            with open(geo_filepath, 'r') as gf:
-                for line in gf:
-                    line = line.strip()
-                    if len(line) < 54: continue
-                    a1 = float(line[27:36].split()[0])
-                    if abs(a1 - target_ncaca) > geo_lib_params['ANG1DIFF']: continue
-                    a2 = float(line[36:45].split()[0])
-                    if abs(a2 - target_cacac) > geo_lib_params['ANG2DIFF']: continue
-                    h = float(line[45:54].split()[0])
-                    h_diff = h - target_dih
-                    if h_diff < -180: h_diff += 360
-                    if h_diff > 180: h_diff -= 360
-                    if abs(h_diff) > geo_lib_params['DIHDIFF']: continue
-                    patch_name = line[:17].strip()
-                    score = (((a1 - target_ncaca) / geo_lib_params['ANG1DIFF'])**2 +
-                             ((a2 - target_cacac) / geo_lib_params['ANG2DIFF'])**2 +
-                             ((h_diff) / geo_lib_params['DIHDIFF'])**2)
-                    candidate_scores.append((score, patch_name))
-        except (ValueError, IndexError): continue
-    best_candidates = heapq.nsmallest(config['BESTPATCHNUM'], candidate_scores)
-    return [name for score, name in best_candidates]
+            with open(filename, 'r') as f: lines = f.readlines()
+            for line in lines:
+                if not line.startswith("ATOM"): continue
+                if backbone_only and line[13:16].strip() not in allowed_atoms: continue
+                if rn == 0 or line[17:26] != p.res[rn - 1].nam:
+                    if rn >= len(p.res): break
+                    p.res[rn].nam = line[17:26]; p.res[rn].start = n
+                    if rn != 0: p.res[rn-1].end = n - 1
+                    rn += 1
+                if n >= len(p.xyz): break
+                p.xyz[n] = PDBReader.getxyz(line); p.nam[n] = line[13:16].strip(); atom_name = line[13:16]; res_idx = rn - 1
+                if atom_name == "N  ":
+                    if rn == 1: p.N = n
+                    p.res[res_idx].N = n; p.CN = n
+                elif atom_name == "CA ":
+                    if rn == 1: p.CAN = n
+                    p.res[res_idx].CA = n; p.CAC = n
+                elif atom_name == "C  ":
+                    if rn == 1: p.NC = n
+                    p.res[res_idx].C = n; p.C = n
+                n += 1
+            p.an = n; p.resn = rn
+            if rn > 0: p.res[rn-1].end = n - 1
+        except FileNotFoundError: return None
+        return p
+    @staticmethod
+    def readfrag(filename: str) -> Fragment: return PDBReader._read_fragment_internal(filename, backbone_only=False)
+    @staticmethod
+    def readfrag_backbone_only(filename: str) -> Fragment: return PDBReader._read_fragment_internal(filename, backbone_only=True)
+    @staticmethod
+    def readtarget(filename: str) -> np.ndarray:
+        target = [];
+        try:
+            with open(filename, 'r') as f:
+                for line in f:
+                    if line.startswith("ATOM"): target.append(PDBReader.getxyz(line))
+        except FileNotFoundError: return None
+        return np.array(target, dtype=np.float64)
 
-def perform_linker_search(geo_params, config):
-    all_candidates_with_context = []
-    geo_libs = {3: config['TRIPEP_GEO_DIR'], 4: config['TETRAPEP_GEO_DIR'], 5: config['PENTPEP_GEO_DIR']}
-    for direction in [0, 1]:
-        tmdis = geo_params[f'tmdis_{direction}']
-        search_tasks = []
-        if config['TERMINAL_DIS_CA_MIN'] < tmdis < config['TERMINAL_DIS_CA_MAX3']: search_tasks.append({'len_type': 3, 'lib_path': geo_libs[3]})
-        if config['TERMINAL_DIS_CA_MIN'] < tmdis < config['TERMINAL_DIS_CA_MAX4']: search_tasks.append({'len_type': 4, 'lib_path': geo_libs[4]})
-        if config['TERMINAL_DIS_CA_MIN'] < tmdis < config['TERMINAL_DIS_CA_MAX5']: search_tasks.append({'len_type': 5, 'lib_path': geo_libs[5]})
-        for task in search_tasks:
-            for sup_type in [0, 1]:
-                params_key_suffix = f"_{direction}" if sup_type == 0 else f"2_{direction}"
-                params = (
-                    geo_params[f'tmdis_{direction}'], geo_params[f'ncaca{params_key_suffix}'],
-                    geo_params[f'cacac{params_key_suffix}'], geo_params[f'dih{params_key_suffix}']
-                )
-                found_patches = find_linkers(task['lib_path'], sup_type, *params, config)
-                for patch_name in found_patches:
-                    all_candidates_with_context.append({
-                        "name": patch_name, "direction": direction,
-                        "sup_type": sup_type, "len_type": task['len_type']
-                    })
-    return all_candidates_with_context
 
-def get_terminal_coords_for_superpose(p1, p2, patch, direction, sup_type):
-    try:
-        if sup_type == 0:
-            mob_coords = np.vstack([
-                patch.coords[patch.key_atom_indices['N_C']], patch.coords[patch.key_atom_indices['CA_C']],
-                patch.coords[patch.key_atom_indices['CA_N']], patch.coords[patch.key_atom_indices['C_N']]
-            ])
-        else:
-            mob_coords = np.vstack([
-                patch.coords[patch.key_atom_indices['N_N']], patch.coords[patch.key_atom_indices['CA_N']],
-                patch.coords[patch.key_atom_indices['CA_C']], patch.coords[patch.key_atom_indices['C_C']]
-            ])
-        if direction == 0:
-            if sup_type == 0:
-                ref_coords = np.vstack([
-                    p1.coords[p1.key_atom_indices['N_N']], p1.coords[p1.key_atom_indices['CA_N']],
-                    p2.coords[p2.key_atom_indices['CA_C']], p2.coords[p2.key_atom_indices['C_C']]
-                ])
-            else:
-                ref_coords = np.vstack([
-                    p2.coords[p2.key_atom_indices['N_C']], p2.coords[p2.key_atom_indices['CA_C']],
-                    p1.coords[p1.key_atom_indices['CA_N']], p1.coords[p1.key_atom_indices['C_N']]
-                ])
-        else:
-            if sup_type == 0:
-                ref_coords = np.vstack([
-                    p2.coords[p2.key_atom_indices['N_N']], p2.coords[p2.key_atom_indices['CA_N']],
-                    p1.coords[p1.key_atom_indices['CA_C']], p1.coords[p1.key_atom_indices['C_C']]
-                ])
-            else:
-                ref_coords = np.vstack([
-                    p1.coords[p1.key_atom_indices['N_C']], p1.coords[p1.key_atom_indices['CA_C']],
-                    p2.coords[p2.key_atom_indices['CA_N']], p2.coords[p2.key_atom_indices['C_N']]
-                ])
-        return ref_coords, mob_coords
-    except (KeyError, TypeError, ValueError, IndexError):
-        return None, None
+class FragmentLinker:
+    def __init__(self): self.pdb_reader = PDBReader(); self.patch_cache = {}
+    def getgapgeo(self, p1: Fragment, p2: Fragment) -> Tuple:
+        terxyz = np.zeros((2, 2, 4, 3)); terxyz[0,0,0,:]=p1.xyz[p1.N]; terxyz[0,0,1,:]=p1.xyz[p1.CAN]; terxyz[0,0,2,:]=p2.xyz[p2.CAC]; terxyz[0,0,3,:]=p2.xyz[p2.C]; terxyz[1,0,0,:]=p2.xyz[p2.N]; terxyz[1,0,1,:]=p2.xyz[p2.CAN]; terxyz[1,0,2,:]=p1.xyz[p1.CAC]; terxyz[1,0,3,:]=p1.xyz[p1.C]; terxyz[0,1,0,:]=p2.xyz[p2.CN]; terxyz[0,1,1,:]=p2.xyz[p2.CAC]; terxyz[0,1,2,:]=p1.xyz[p1.CAN]; terxyz[0,1,3,:]=p1.xyz[p1.NC]; terxyz[1,1,0,:]=p1.xyz[p1.CN]; terxyz[1,1,1,:]=p1.xyz[p1.CAC]; terxyz[1,1,2,:]=p2.xyz[p2.CAN]; terxyz[1,1,3,:]=p2.xyz[p2.NC]
+        tmdis  = np.array([Geometry.distance(p1.xyz[p1.CAN], p2.xyz[p2.CAC]), Geometry.distance(p2.xyz[p2.CAN], p1.xyz[p1.CAC])]); ncaca  = np.array([Geometry.cal_angle(p1.xyz[p1.N], p1.xyz[p1.CAN], p2.xyz[p2.CAC]), Geometry.cal_angle(p2.xyz[p2.N], p2.xyz[p2.CAN], p1.xyz[p1.CAC])]); cacac  = np.array([Geometry.cal_angle(p1.xyz[p1.CAN], p2.xyz[p2.CAC], p2.xyz[p2.C]), Geometry.cal_angle(p2.xyz[p2.CAN], p1.xyz[p1.CAC], p1.xyz[p1.C])]); dih    = np.array([Geometry.cal_dih(p1.xyz[p1.N], p1.xyz[p1.CAN], p2.xyz[p2.CAC], p2.xyz[p2.C]), Geometry.cal_dih(p2.xyz[p2.N], p2.xyz[p2.CAN], p1.xyz[p1.CAC], p1.xyz[p1.C])]); ncaca2 = np.array([Geometry.cal_angle(p2.xyz[p2.CN], p2.xyz[p2.CAC], p1.xyz[p1.CAN]), Geometry.cal_angle(p1.xyz[p1.CN], p1.xyz[p1.CAC], p2.xyz[p2.CAN])]); cacac2 = np.array([Geometry.cal_angle(p2.xyz[p2.CAC], p1.xyz[p1.CAN], p1.xyz[p1.NC]), Geometry.cal_angle(p1.xyz[p1.CAC], p2.xyz[p2.CAN], p2.xyz[p2.NC])]); dih2   = np.array([Geometry.cal_dih(p2.xyz[p2.CN], p2.xyz[p2.CAC], p1.xyz[p1.CAN], p1.xyz[p1.NC]), Geometry.cal_dih(p1.xyz[p1.CN], p1.xyz[p1.CAC], p2.xyz[p2.CAN], p2.xyz[p2.NC])])
+        return tmdis, ncaca, cacac, dih, ncaca2, cacac2, dih2, terxyz
+    def centerterminal(self, terxyz0: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        tcenter = np.mean(terxyz0, axis=2); terxyz = terxyz0 - tcenter[:, :, np.newaxis, :]; return tcenter, terxyz
+    def _vectorized_steric_check(self, coords1, coords2, d_max_sq, d_min_sq, penalty_d_min, penalty_d_offset):
+        if coords1.shape[0] == 0 or coords2.shape[0] == 0: return 0.0
+        dist_sq_matrix = np.sum((coords1[:, np.newaxis, :] - coords2[np.newaxis, :, :]) ** 2, axis=2)
+        steric = np.sum(dist_sq_matrix < d_min_sq) * ACCEPTSTERIC * 2
+        if steric > ACCEPTSTERIC: return steric
+        moderate_mask = (dist_sq_matrix >= d_min_sq) & (dist_sq_matrix < d_max_sq)
+        if np.any(moderate_mask): steric += np.sum(1.0 - (np.sqrt(dist_sq_matrix[moderate_mask]) - penalty_d_min) / penalty_d_offset)
+        return steric
+    def checksteric(self, p: Fragment, p1: Fragment, p2: Fragment) -> Tuple[float, List[int]]:
+        steric = 0.0; ter = [1, 1]; coords_p_internal = p.xyz[p.res[1].start : p.res[p.resn - 1].start]
+        steric += self._vectorized_steric_check(coords_p_internal, p2.xyz[:p2.res[p2.resn - 1].start], 9.0, 5.76, 2.4, 0.6)
+        if steric > ACCEPTSTERIC: return steric, ter
+        steric += self._vectorized_steric_check(coords_p_internal, p1.xyz[p1.res[1].start : p1.an], 9.0, 5.76, 2.4, 0.6)
+        if steric > ACCEPTSTERIC: return steric, ter
+        tersteric = 0.0
+        for ia in range(p.res[1].start, p.res[p.resn-1].start):
+            for ja in range(4, p1.res[1].start):
+                d2 = Geometry.distance2(p.xyz[ia], p1.xyz[ja]);
+                if d2 < 4.84: ter[0] = 0; break
+                if d2 < 7.84: tersteric += 1.0 - (math.sqrt(d2) - 2.2) / 0.6
+                if tersteric > ACCEPTTERSTERIC: ter[0] = 0; break
+            if ter[0] == 0: break
+        tersteric = 0.0
+        for ia in range(p.res[1].start, p.res[p.resn-1].start):
+            for ja in range(p2.res[p2.resn-1].start + 4, p2.an):
+                d2 = Geometry.distance2(p.xyz[ia], p2.xyz[ja]);
+                if d2 < 4.84: ter[1] = 0; break
+                if d2 < 7.84: tersteric += 1.0 - (math.sqrt(d2) - 2.2) / 0.6
+                if tersteric > ACCEPTTERSTERIC: ter[1] = 0; break
+            if ter[1] == 0: break
+        return steric, ter
+    def checksteric2(self, p: Fragment, p1: Fragment, p2: Fragment) -> Tuple[float, List[int]]:
+        steric, ter = 0.0, [1, 1]; coords_p_terminal = p.xyz[p.NC : p.CN + 1]
+        if p2.resn > 1:
+            coords_p2 = np.delete(p2.xyz[:p2.res[p2.resn-1].start], p2.res[p2.resn-2].C, axis=0)
+            steric += self._vectorized_steric_check(coords_p_terminal, coords_p2, 9.0, 5.76, 2.4, 0.6)
+            if steric > ACCEPTSTERIC: return steric, ter
+        if p1.resn > 1:
+            coords_p1 = p1.xyz[p1.res[1].start + 1 : p1.an]
+            steric += self._vectorized_steric_check(coords_p_terminal, coords_p1, 9.0, 5.76, 2.4, 0.6)
+            if steric > ACCEPTSTERIC: return steric, ter
+        if math.sqrt(Geometry.distance2(p.xyz[p.res[p.resn - 1].N], p1.xyz[p1.res[0].N])) >= 0.8: ter[0] = 0
+        if math.sqrt(Geometry.distance2(p.xyz[p.res[0].C], p2.xyz[p2.res[p2.resn - 1].C])) >= 0.8: ter[1] = 0
+        return steric, ter
+    def pepterdock(self, target: np.ndarray, p1: Fragment, p2: Fragment) -> List[float]: return [0.0] * 4
+    def dock2target(self, target: np.ndarray, p: Fragment) -> float:
+        coords_p = p.xyz[p.res[1].start : p.res[p.resn-1].start]
+        steric = self._vectorized_steric_check(coords_p, target, 9.0, 5.76, 2.4, 0.6)
+        return min(steric, ACCEPTDOCKSTERIC)
 
-def _calculate_rmsd(coords1, coords2):
-    diff = coords1 - coords2
-    return np.sqrt(np.mean(np.sum(diff * diff, axis=1)))
-
-def cluster_results(all_best_candidates, config):
-    if not all_best_candidates:
-        return []
-
-    sorted_candidates = sorted(all_best_candidates, key=lambda x: x['score'])
-    
-    final_representatives = []
-    cluster_reps_ca_coords = []
-
-    for candidate in sorted_candidates:
-        current_patch = candidate['patch']
-        current_ca_coords = current_patch.get_ca_coords()
+    def readfraglib(self, geo_data: Dict, libname: str, typ: int, tmdis: float, ncaca: float, cacac: float, dih: float) -> List[Dict]:
+        """修改后的版本，从内存中的 geo_data 字典读取数据，并修正了路径拼接的bug"""
+        patches = []
+        d_range = np.arange(tmdis - DISDIFF, tmdis + DISDIFF + 0.0005, 0.001)
         
-        if current_ca_coords.size == 0:
-            continue
+        for d in d_range:
+            # ========================= 关键修正 =========================
+            # 先生成纯文件名，然后使用 os.path.join 来确保路径正确
+            geo_filename = f"{'D' if typ == 0 else 'd'}{d:.3f}"
+            disgeofn = os.path.join(libname, geo_filename)
+            # ==========================================================
 
-        is_new_cluster = True
-        for rep_ca_coords in cluster_reps_ca_coords:
-            if current_ca_coords.shape[0] != rep_ca_coords.shape[0]:
-                continue
+            lines = geo_data.get(disgeofn) # 从内存字典中获取文件内容
+            if not lines: continue
             
-            rmsd = _calculate_rmsd(current_ca_coords, rep_ca_coords)
-            
-            if rmsd < config['CULSTERRMSD']:
-                is_new_cluster = False
-                break
-        
-        if is_new_cluster:
-            final_representatives.append(candidate)
-            cluster_reps_ca_coords.append(current_ca_coords)
-        
-        if len(final_representatives) >= config['BESTCLUSTERNUM']:
-            break
-            
-    return final_representatives
-
-def process_pair(args):
-    pair_index, frag1_path, frag2_path, frag_scores, target_coords_full, config = args
-    
-    if config['DEBUG_MODE']: logging.info(f"\n--- [START] Pair {pair_index}: {os.path.basename(frag1_path)} vs {os.path.basename(frag2_path)} ---")
-
-    p1_geom = Fragment(frag1_path)
-    p2_geom = Fragment(frag2_path)
-    if not p1_geom.is_valid() or not p2_geom.is_valid(): return []
-    
-    p1_full = FullAtomFragment(frag1_path)
-    p2_full = FullAtomFragment(frag2_path)
-    if p1_full.coords is None or p2_full.coords is None: return []
-
-    pepterdockscore = pepterdock(p1_full, p2_full, target_coords_full)
-
-    geo_params = calculate_gap_geometry(p1_geom, p2_geom)
-    if geo_params is None: return []
-    
-    linker_candidates = perform_linker_search(geo_params, config)
-    if not linker_candidates: return []
-    if config['DEBUG_MODE']: logging.info(f"  [INFO] Found {len(linker_candidates)} candidates to evaluate.")
-
-    top_candidates = {0: [], 1: []}
-    candidate_id_counter = 0
-
-    for i, candidate_info in enumerate(linker_candidates):
-        patch = Fragment(os.path.join(config['FRAGLIB_DIR'], candidate_info['name']))
-        if not patch.is_valid(): continue
-        
-        coords_ref_orig, coords_mob_orig = get_terminal_coords_for_superpose(p1_geom, p2_geom, patch, candidate_info['direction'], candidate_info['sup_type'])
-        if coords_ref_orig is None or coords_mob_orig is None: continue
-        
-        ref_centroid = np.mean(coords_ref_orig, axis=0)
-        mob_centroid = np.mean(coords_mob_orig, axis=0)
-        R, t, rmsd = fit_terminal(coords_ref_orig - ref_centroid, coords_mob_orig - mob_centroid)
-        
-        if rmsd < config['ACCEPT_RMSD']:
-            patch.coords = np.dot(patch.coords - mob_centroid, R.T) + ref_centroid
-            
-            direction = candidate_info['direction']
-            sup_type = candidate_info['sup_type']
-            steric_score = config['ACCEPT_STERIC'] + 1.0
-            ter_flags = [0, 0]
-
-            if direction == 0 and sup_type == 0:
-                steric_score, ter_flags = check_steric(patch, p1_geom, p2_geom, sup_type, config)
-            elif direction == 1 and sup_type == 0:
-                steric_score, ter_flags = check_steric(patch, p2_geom, p1_geom, sup_type, config)
-            elif direction == 0 and sup_type == 1:
-                steric_score, ter_flags = check_steric2_np(patch, p1_geom, p2_geom, config)
-            elif direction == 1 and sup_type == 1:
-                steric_score, ter_flags = check_steric2_np(patch, p2_geom, p1_geom, config)
-            
-            # if config['DEBUG_MODE']: logging.info(f"                                      | Steric_score: {steric_score:.4f}")
-
-            if steric_score < config['ACCEPT_STERIC']:
-                docking_score = dock_to_target(patch, target_coords_full, config)
-                # if config['DEBUG_MODE']: logging.info(f"                                      | Docking_score: {docking_score:.4f}")
-
-                if docking_score < config['ACCEPT_DOCKING']:
-                    terminalscore = 0.0
-                    if direction == 0:
-                        if ter_flags[0] == 1: terminalscore += pepterdockscore[0]
-                        if ter_flags[1] == 1: terminalscore += pepterdockscore[3]
-                    else: # direction == 1
-                        if ter_flags[0] == 1: terminalscore += pepterdockscore[2]
-                        if ter_flags[1] == 1: terminalscore += pepterdockscore[1]
-                    # if config['DEBUG_MODE']: logging.info(f"                                      | Terminal_score: {terminalscore:.4f}")
+            for line in lines:
+                try:
+                    a1, a2, h = float(line[27:36]), float(line[36:45]), float(line[45:54])
+                    if abs(a1 - ncaca) > ANG1DIFF or abs(a2 - cacac) > ANG2DIFF: continue
                     
-                    linker_len_penalty = (candidate_info['len_type'] - 3) * 2.0
-                    final_score = (rmsd * 4.0) + steric_score + docking_score + linker_len_penalty + terminalscore
-                    # if config['DEBUG_MODE']: logging.info(f"                                      | Final_score: {final_score:.4f}")
+                    h_diff = h - dih
+                    if h_diff < -180: h += 360
+                    elif h_diff > 180: h -= 360
                     
-                    candidate_data = {
-                        'name': candidate_info['name'], 'score': final_score, 'rmsd': rmsd,
-                        'steric': steric_score, 'docking': docking_score, 'terminalscore': terminalscore,
-                        'patch': patch, 'direction': direction, 'sup_type': sup_type, 'ter_flags': ter_flags
-                    }
-
-                    item_to_push = (-final_score, candidate_id_counter, candidate_data)
-                    candidate_id_counter += 1
-
-                    if len(top_candidates[direction]) < config['BESTNUM']:
-                        heapq.heappush(top_candidates[direction], item_to_push)
-                    else:
-                        heapq.heappushpop(top_candidates[direction], item_to_push)
-                        
-    all_final_reps = []
-    for direction in [0, 1]:
-        direction_candidates = [item[2] for item in heapq.nlargest(config['BESTNUM'], top_candidates[direction])]
-        if not direction_candidates:
-            continue
-
-        reps_for_direction = cluster_results(direction_candidates, config)
-        
-        for i, rep in enumerate(reps_for_direction):
-            rep['cluster_id'] = i + 1
-        
-        all_final_reps.extend(reps_for_direction)
-
-    if not all_final_reps: return []
-    
-    all_final_reps.sort(key=lambda x: (x['direction'], x['cluster_id']))
-    
-    if config['DEBUG_MODE']: 
-        logging.info(f"  [SUCCESS] Pair {pair_index}: Found {len(all_final_reps)} final candidates in total after separate clustering.")
-    
-    return all_final_reps
-
-def write_fraglink_output(final_candidates, config, job_args):
-    if not final_candidates:
-        return
-
-    pair_index, frag1_path, frag2_path, frag_scores = job_args[0:4]
-    
-    # 确保输出目录存在
-    os.makedirs(config['OUTPUT_DIR'], exist_ok=True)
-
-    # 动态构建输出文件名，包含 pair_index
-    output_filename = os.path.join(
-        config['OUTPUT_DIR'], 
-        f"{config['OUTPUT_PREFIX']}_{pair_index}" # 添加 .txt 扩展名
-    )
-    
-    try:
-        with open(output_filename, 'w') as f:
-            for candidate in final_candidates:
-                cluster_id = candidate['cluster_id']
-                patch = candidate['patch']
+                    if abs(h - dih) > DIHDIFF: continue
+                    
+                    score = ((d - tmdis) / DISDIFF) ** 2 + ((a1 - ncaca) / ANG1DIFF) ** 2 + \
+                            ((a2 - cacac) / ANG2DIFF) ** 2 + ((h - dih) / DIHDIFF) ** 2
+                    patches.append({'name': line[:17].strip(), 'score': score})
+                except (ValueError, IndexError): continue
                 
-                f.write(f"TITLE   {candidate['direction'] + 1}  {cluster_id}  {candidate['sup_type'] + 1}\n")
+        patches.sort(key=lambda x: x['score'])
+        return patches[:BESTPATCHNUM]
 
-                if candidate['direction'] == 0:
-                    dock1_flag, dock1_score, dock1_path = candidate['ter_flags'][0], frag_scores[0], frag1_path
-                    dock2_flag, dock2_score, dock2_path = candidate['ter_flags'][1], frag_scores[1], frag2_path
-                else:
-                    dock1_flag, dock1_score, dock1_path = candidate['ter_flags'][0], frag_scores[1], frag2_path
-                    dock2_flag, dock2_score, dock2_path = candidate['ter_flags'][1], frag_scores[0], frag1_path
-                
-                f.write(f"REMARK  dock1 {dock1_flag:2d} {dock1_score:8.3f} {dock1_path}\n")
-                f.write(f"REMARK  dock2 {dock2_flag:2d} {dock2_score:8.3f} {dock2_path}\n")
-                f.write(f"REMARK  link {config['FRAGLIB_DIR']}/{candidate['name']}\n")
-                f.write(f"REMARK  score   {candidate['score']:8.3f} {candidate['rmsd']:8.3f} {candidate['steric']:8.3f} {candidate['docking']:8.3f} {candidate['terminalscore']:8.3f}\n")
-                
-                atom_serial = 1
-                for res_id in patch.residues:
-                    res_info = patch.residue_info[res_id]
-                    res_name = res_info['res_name']
-                    chain_id = res_id[0] if res_id[0] else 'A'
-                    res_seq = res_id[1]
-                    for atom_idx in range(res_info['start_index'], res_info['end_index'] + 1):
-                        atom_name = patch.atom_names[atom_idx]
-                        x, y, z = patch.coords[atom_idx]
-                        atom_line = (f"ATOM  {atom_serial:5d}  {atom_name:<4s}{res_name:>3s} {chain_id}{res_seq:4d}    "
-                                     f"{x:8.3f}{y:8.3f}{z:8.3f}\n")
-                        f.write(atom_line)
-                        atom_serial += 1
+    def readpatchxyz(self, dirname: str, pnam: str, typ: int) -> Tuple[Fragment, np.ndarray]:
+        if pnam in self.patch_cache: return self.patch_cache[pnam]
+        filename = os.path.join(dirname, f"pre_{pnam}")
+        p = self.pdb_reader.readfrag_backbone_only(filename)
+        if p is None: return None, None
+        terxyz = np.zeros((4, 3))
+        if typ == 0: terxyz[0]=p.xyz[p.CN]; terxyz[1]=p.xyz[p.CAC]; terxyz[2]=p.xyz[p.CAN]; terxyz[3]=p.xyz[p.NC]
+        else: terxyz[0]=p.xyz[p.N]; terxyz[1]=p.xyz[p.CAN]; terxyz[2]=p.xyz[p.CAC]; terxyz[3]=p.xyz[p.C]
+        self.patch_cache[pnam] = (p, terxyz)
+        return p, terxyz
+    def buildcomplex(self, lpcenter: np.ndarray, trans: np.ndarray, rotR: np.ndarray, p: Fragment):
+        mobile_coords = p.xyz[:p.an]; mobile_centered = mobile_coords - trans
+        mobile_rotated = Superpose.do_rot(mobile_centered, rotR); p.xyz[:p.an] = mobile_rotated + lpcenter
+    def getCAxyz(self, p: Fragment) -> np.ndarray:
+        num_res = min(p.resn, 5); return np.array([p.xyz[p.res[ir].CA] for ir in range(num_res)])
+    def CAcompare(self, resn: int, linkerCA: np.ndarray, N: int, bestCAn: List[int], bestCA: List[np.ndarray]) -> int:
+        for ic in range(N):
+            if resn != bestCAn[ic]: continue
+            min_res = min(resn, len(bestCA[ic]))
+            if min_res == 0: continue
+            rmsd = np.sqrt(np.mean(np.sum((bestCA[ic][:min_res] - linkerCA[:min_res]) ** 2, axis=1)))
+            if rmsd < CULSTERRMSD: return ic + 1
+        return N + 1
+    def cp2clusterCA(self, resn: int, linkerCA: np.ndarray, bestCA_slice: np.ndarray):
+        num_to_copy = min(resn, len(bestCA_slice)); bestCA_slice[:num_to_copy] = linkerCA[:num_to_copy]
+    def printpepstructure(self, id: int, frag1name: str, frag2name: str, fragdir: str, pepname: str, rmsd: float, steric: float, docking: float, tersteric: float, score: float, pepfname: str, p: Fragment, patchi: int, typ: int, ter: List[int], fragscore: List[float]):
+        try:
+            with open(pepfname, 'a') as f:
+                f.write(f"TITLE   {patchi+1:2d} {id:2d} {typ+1:2d}\n"); f.write(f"REMARK  dock1 {ter[0]:2d} {fragscore[0]:8.3f} {frag1name}\n"); f.write(f"REMARK  dock2 {ter[1]:2d} {fragscore[1]:8.3f} {frag2name}\n"); f.write(f"REMARK  link {fragdir}/{pepname}\n"); f.write(f"REMARK  score {score:8.3f} {rmsd:8.3f}{steric:8.3f}{docking:8.3f}{tersteric:8.3f}\n")
+                atno = 1
+                for ir in range(p.resn):
+                    loop_end = min(p.res[ir].start + 4, p.an)
+                    for i in range(p.res[ir].start, loop_end):
+                        f.write(f"ATOM  {atno:>5d}  {p.nam[i]:<4s}{p.res[ir].nam[:3]:>3s} A{p.res[ir].nam[6:]:>4s}   {p.xyz[i,0]:8.3f}{p.xyz[i,1]:8.3f}{p.xyz[i,2]:8.3f}\n"); atno += 1
+                    if ir != 0 and ir != p.resn - 1:
+                        side_chain_start = p.res[ir].start + 4; side_chain_end = min(p.res[ir].end + 1, p.an)
+                        for i in range(side_chain_start, side_chain_end):        
+                            f.write(f"ATOM  {atno:>5d}  {p.nam[i]:<4s}{p.res[ir].nam[:3]:>3s} A{p.res[ir].nam[6:]:>4s}   {p.xyz[i,0]:8.3f}{p.xyz[i,1]:8.3f}{p.xyz[i,2]:8.3f}\n"); atno += 1
                 f.write("END\n")
-        logging.info(f"写入文件: {output_filename}") # 确认写入
-    except IOError as e:
-        logging.error(f"错误: 无法写入输出文件 '{output_filename}': {e}")
-        # 写入错误日志
-        with open(config['COMBINED_OUTPUT_LOG'], 'a') as f_err:
-            f_err.write(f"IOError: 无法写入 {output_filename}: {e}\n")
-            traceback.print_exc(file=f_err)
-    except Exception as e:
-        logging.error(f"错误: 写入文件 '{output_filename}' 时发生未知错误: {e}")
-        with open(config['COMBINED_OUTPUT_LOG'], 'a') as f_err:
-            f_err.write(f"未知错误: 写入 {output_filename}: {e}\n")
-            traceback.print_exc(file=f_err)
+        except (IOError, IndexError): pass
 
+# =======================================================================
+#  并行化执行与新功能
+# =======================================================================
 
-def format_time(seconds):
-    if seconds is None:
-        return "N/A"
-    m, s = divmod(seconds, 60)
-    h, m = divmod(m, 60)
-    return f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
+# 1. 新增：预加载所有几何库文件的函数
+def preload_geo_data(libs: List[str]) -> Dict:
+    logging.info("开始预加载几何库文件到内存...")
+    geo_data = {}
+    all_files_to_load = []
+    for lib_dir in libs:
+        if not os.path.isdir(lib_dir):
+            logging.warning(f"几何库目录不存在: {lib_dir}")
+            continue
+        for filename in os.listdir(lib_dir):
+            if filename.startswith('D') or filename.startswith('d'):
+                all_files_to_load.append(os.path.join(lib_dir, filename))
 
+    # 使用 tqdm 显示预加载进度
+    for filepath in tqdm(all_files_to_load, desc="Preloading geo files"):
+        try:
+            with open(filepath, 'r') as f:
+                geo_data[filepath] = f.readlines()
+        except Exception as e:
+            logging.warning(f"无法读取文件 {filepath}: {e}")
+
+    total_size_mb = sum(sum(len(line) for line in lines) for lines in geo_data.values()) / (1024 * 1024)
+    logging.info(f"预加载完成！共加载 {len(geo_data)} 个文件, 总大小: {total_size_mb:.2f} MB。")
+    return geo_data
+
+# 全局变量，用于在工作进程中初始化
+WORKER_LINKER, WORKER_TARGET, WORKER_LIBS, WORKER_PATCH_DIR, WORKER_GEO_DATA = None, None, None, None, None
+
+def init_worker(linker, target, libs, patch_dir, geo_data):
+    """初始化每个工作进程的全局变量"""
+    global WORKER_LINKER, WORKER_TARGET, WORKER_LIBS, WORKER_PATCH_DIR, WORKER_GEO_DATA
+    WORKER_LINKER, WORKER_TARGET, WORKER_LIBS, WORKER_PATCH_DIR, WORKER_GEO_DATA = linker, target, libs, patch_dir, geo_data
+
+def process_line(task_info):
+    """处理单个输入行的函数，这是每个工作进程执行的核心任务"""
+    line_num, line, output_prefix = task_info
+    linker = copy.deepcopy(WORKER_LINKER)
+    target, libs, patch_dir, geo_data = WORKER_TARGET, WORKER_LIBS, WORKER_PATCH_DIR, WORKER_GEO_DATA
+
+    try:
+        parts = line.strip().split()
+        if len(parts) < 4: return (line_num, "Skipped_NotEnoughParts", 0)
+        
+        frg1nm, frg2nm, score1, score2 = parts[0], parts[1], parts[2], parts[3]
+        fragscore = [float(score1), float(score2)]
+        outname = f"{output_prefix}_{line_num}"
+        if os.path.exists(outname): os.remove(outname)
+        
+        p1 = linker.pdb_reader.readfrag(frg1nm)
+        p2 = linker.pdb_reader.readfrag(frg2nm)
+        if p1 is None or p2 is None: return (line_num, "Skipped_FragReadError", 0)
+
+        tmdis, ncaca, cacac, dih, ncaca2, cacac2, dih2, terxyz0 = linker.getgapgeo(p1, p2)
+        tcenter, terxyz = linker.centerterminal(terxyz0)
+        pepterdockscore = linker.pepterdock(target, p1, p2)
+        
+        all_valid_candidates = [[] for _ in range(2)]
+        
+        for ii in range(2):
+            geos = [(tmdis[ii], ncaca[ii], cacac[ii], dih[ii], 0), (tmdis[ii], ncaca2[ii], cacac2[ii], dih2[ii], 1)]
+            for current_tmdis, current_ncaca, current_cacac, current_dih, jj in geos:
+                lib_configs = [(libs[0], 4.5, 7.5), (libs[1], 5.5, 10.5), (libs[2], 6.5, 13.5)]
+                for il, (lib_dir, min_d, max_d) in enumerate(lib_configs):
+                    if not (min_d < current_tmdis < max_d): continue
+                    
+                    patches = linker.readfraglib(geo_data, lib_dir, jj, current_tmdis, current_ncaca, current_cacac, current_dih)
+                    
+                    for patch_info in patches:
+                        patch_name = patch_info['name']
+                        p, pterxyz = linker.readpatchxyz(patch_dir, patch_name, jj)
+                        if p is None: continue
+                        rmsd, rotR, trans = Superpose.fit_terminal(terxyz[ii, jj], pterxyz)
+                        if rmsd >= ACCEPTRMSD: continue
+                        linker.buildcomplex(tcenter[ii, jj], trans, rotR, p)
+                        p_for_check1, p_for_check2 = (p1, p2) if ii == 0 else (p2, p1)
+                        if jj == 0: steric, tersteric = linker.checksteric(p, p_for_check1, p_for_check2)
+                        else: steric, tersteric = linker.checksteric2(p, p_for_check1, p_for_check2)
+                        if steric >= ACCEPTSTERIC: continue
+                        docking = linker.dock2target(target, p)
+                        if docking >= ACCEPTDOCKING: continue
+                        terminalscore = 0.0
+                        if ii == 0:
+                            if tersteric[0] == 1: terminalscore += pepterdockscore[0]
+                            if tersteric[1] == 1: terminalscore += pepterdockscore[3]
+                        else:
+                            if tersteric[0] == 1: terminalscore += pepterdockscore[2]
+                            if tersteric[1] == 1: terminalscore += pepterdockscore[1]
+                        score = rmsd * 4 + steric + docking + il * 2 + terminalscore
+                        all_valid_candidates[ii].append({'score': score, 'p_object': p, 'rmsd': rmsd, 'steric': steric, 'docking': docking, 'terminalscore': terminalscore, 'tersteric': tersteric, 'name': patch_name, 'ii': ii, 'jj': jj})
+
+        cluster_count = 0
+        top_candidates = [[] for _ in range(2)]
+        for ii in range(2):
+            all_valid_candidates[ii].sort(key=lambda x: x['score'])
+            top_candidates[ii] = all_valid_candidates[ii][:BESTNUM]
+
+        bestCAn = [[0] * BESTNUM for _ in range(2)]; bestCA = [[np.zeros((5, 3)) for _ in range(BESTNUM)] for _ in range(2)]
+        for ii in range(2):
+            if not top_candidates[ii]: continue
+            clusterN = 0
+            for candidate_info in top_candidates[ii]:
+                if clusterN >= BESTCLUSTERNUM: break
+                p = candidate_info['p_object']; linkerCA = linker.getCAxyz(p)
+                clusterid = linker.CAcompare(p.resn, linkerCA, clusterN, bestCAn[ii], bestCA[ii])
+                if clusterid > clusterN:
+                    linker.printpepstructure(clusterN + 1, frg1nm, frg2nm, patch_dir, candidate_info['name'], candidate_info['rmsd'], candidate_info['steric'], candidate_info['docking'], candidate_info['terminalscore'], candidate_info['score'], outname, p, candidate_info['ii'], candidate_info['jj'], candidate_info['tersteric'], fragscore)
+                    bestCAn[ii][clusterN] = p.resn; linker.cp2clusterCA(p.resn, linkerCA, bestCA[ii][clusterN]); clusterN += 1
+            cluster_count += clusterN
+
+        if cluster_count > 0:
+            return (line_num, "Success_FileGenerated", cluster_count)
+        else:
+            return (line_num, "Success_NoLinkersFound", 0)
+    except Exception:
+        return (line_num, "FAILED_UnhandledException", 0)
 
 def main():
-    import logging
-    for handler in logging.root.handlers[:]:
-        logging.root.removeHandler(handler)
-        
-    # 定义命令行参数
-    parser = argparse.ArgumentParser(description="Fraglink Python version for finding linkers.")
-    parser.add_argument("--pair_list_file", type=str, required=True,
-                        help="Path to the file containing pairs of fragment paths and scores.")
-    parser.add_argument("--target_pdb_file", type=str, required=True,
-                        help="Path to the target PDB file (e.g., box1.pdb).")
-    parser.add_argument("--tripep_geo_dir", type=str, required=True,
-                        help="Path to the tripeptide geometry directory.")
-    parser.add_argument("--tetrapep_geo_dir", type=str, required=True,
-                        help="Path to the tetrapeptide geometry directory.")
-    parser.add_argument("--pentpep_geo_dir", type=str, required=True,
-                        help="Path to the pentapeptide geometry directory.")
-    parser.add_argument("--fraglib_dir", type=str, required=True,
-                        help="Path to the fragment library directory.")
-    parser.add_argument("--output_prefix", type=str, default="fraglink_pair",
-                        help="Prefix for output linker files (e.g., 'fraglink_pair').")
-    parser.add_argument("--output_dir", type=str, required=True,
-                        help="Directory to save output linker files.")
-    parser.add_argument("--max_workers", type=int, default=os.cpu_count(),
-                        help="Maximum number of parallel processes (default: CPU count).")
-    parser.add_argument("--debug_mode", action='store_true',
-                        help="Enable debug mode for more verbose output.")
-    parser.add_argument("--combined_output_log", type=str, default="run_error_log.txt",
-                        help="File to log errors and exceptions.")
-    parser.add_argument("--progress_log_file", type=str, default="run_progress.log",
-                        help="File to log progress messages.")
-
-    args = parser.parse_args()
-
-    # 将命令行参数填充到 CONFIG 字典
-    global CONFIG # 声明使用全局 CONFIG
-    CONFIG['DEBUG_MODE'] = args.debug_mode
-    CONFIG['MAX_WORKERS'] = args.max_workers
-    CONFIG['PAIR_LIST_FILE'] = args.pair_list_file
-    CONFIG['TARGET_PDB_FILE'] = args.target_pdb_file
-    CONFIG['TRIPEP_GEO_DIR'] = args.tripep_geo_dir
-    CONFIG['TETRAPEP_GEO_DIR'] = args.tetrapep_geo_dir
-    CONFIG['PENTPEP_GEO_DIR'] = args.pentpep_geo_dir
-    CONFIG['FRAGLIB_DIR'] = args.fraglib_dir
-    CONFIG['OUTPUT_PREFIX'] = args.output_prefix
-    CONFIG['OUTPUT_DIR'] = args.output_dir
-    CONFIG['COMBINED_OUTPUT_LOG'] = args.combined_output_log
-    CONFIG['PROGRESS_LOG_FILE'] = args.progress_log_file
+    if len(sys.argv) < 8 or len(sys.argv) > 9:
+        print("用法: python fraglink_parallel_preload.py <fraglist> <target> <output_prefix> <lib3> <lib4> <lib5> <patchdir> [num_workers]")
+        sys.exit(1)
     
-    # 硬编码的常量 (如果它们不通过命令行参数提供)
-    CONFIG['ACCEPT_RMSD'] = 2.0
-    CONFIG['ACCEPT_STERIC'] = 4.0
-    CONFIG['ACCEPT_DOCKING'] = 2.0
-    CONFIG['BESTPATCHNUM'] = 500
-    CONFIG['BESTNUM'] = 30
-    CONFIG['BESTCLUSTERNUM'] = 4
-    CONFIG['CULSTERRMSD'] = 0.6
-    CONFIG['GEO_LIB_PARAMS'] = {'DISDIFF': 0.5, 'ANG1DIFF': 15.0, 'ANG2DIFF': 15.0, 'DIHDIFF': 35.0}
-    CONFIG['TERMINAL_DIS_CA_MIN'] = 4.5
-    CONFIG['TERMINAL_DIS_CA_MAX3'] = 7.5
-    CONFIG['TERMINAL_DIS_CA_MAX4'] = 10.5
-    CONFIG['TERMINAL_DIS_CA_MAX5'] = 13.5
-
-    # 重新配置 logging，确保使用命令行参数提供的日志文件路径
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=[
-            logging.FileHandler(CONFIG['PROGRESS_LOG_FILE'], mode='w'),
-            logging.StreamHandler()
-        ]
-    )
-
-
-    logging.info("--- Fraglink Python版开始执行 ---")
-    start_time = time.time()
+    fraglist_file, target_file, output_prefix, lib3_dir, lib4_dir, lib5_dir, patch_dir = sys.argv[1:8]
+    libs = [lib3_dir, lib4_dir, lib5_dir]
     
-    os.makedirs(CONFIG['OUTPUT_DIR'], exist_ok=True)
-    logging.info(f"输出文件将保存在: {CONFIG['OUTPUT_DIR']}")
+    cpu_count = os.cpu_count()
+    if len(sys.argv) == 9:
+        try: num_workers = int(sys.argv[8])
+        except ValueError: print(f"错误：无效的进程数 '{sys.argv[8]}'。"); sys.exit(1)
+    else: num_workers = cpu_count - 1 if cpu_count > 1 else 1
 
-    logging.info(f"正在加载目标结构: {CONFIG['TARGET_PDB_FILE']}...")
-    target_structure_full = FullAtomFragment(CONFIG['TARGET_PDB_FILE'])
-    if target_structure_full.coords is None:
-        logging.error("错误: 无法加载目标PDB文件，程序终止。")
-        return
-    target_coords_full = target_structure_full.coords
-    logging.info("目标结构加载成功。")
+    log_filename = "/data1/home/renxinyu/sdock/systerm/fcrn/dock/fraglink.log"
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', handlers=[logging.FileHandler(log_filename, mode='w'), logging.StreamHandler(sys.stdout)])
 
+    logging.info(f"脚本启动，将使用 {num_workers} 个进程。")
+    logging.info(f"日志文件将保存在: {log_filename}")
+
+    # 2. 调用预加载函数
+    geo_data = preload_geo_data(libs)
+
+    logging.info("主进程正在准备共享数据...")
+    linker_template = FragmentLinker()
+    target = linker_template.pdb_reader.readtarget(target_file)
+    if target is None: logging.error(f"错误：无法读取目标文件 {target_file}"); sys.exit(1)
+    
     try:
-        with open(CONFIG['PAIR_LIST_FILE'], 'r') as f:
-            all_pairs = [line.strip() for line in f if line.strip()]
+        with open(fraglist_file, 'r') as f: lines = f.readlines()
+        tasks = [(i + 1, line, output_prefix) for i, line in enumerate(lines)]
+        total_tasks = len(tasks)
+        logging.info(f"任务准备完成，共 {total_tasks} 行待处理。")
     except FileNotFoundError:
-        logging.error(f"错误: 找不到配对列表文件: {CONFIG['PAIR_LIST_FILE']}")
-        return
+        logging.error(f"错误：无法打开片段列表文件 {fraglist_file}"); sys.exit(1)
 
-    jobs = []
-    logging.info(f"从 '{os.path.basename(CONFIG['PAIR_LIST_FILE'])}' 中加载了 {len(all_pairs)} 行，正在解析任务...")
-    
-    for i, line in enumerate(all_pairs):
-        parts = line.split()
-        # 确保行至少有4部分：frag1_path, frag2_path, score1, score2
-        if len(parts) < 4: 
-            logging.warning(f"警告: 跳过无效行 (少于4部分): {line.strip()}")
-            continue
-        try:
-            frag1_path = parts[0]; frag2_path = parts[1]
-            frag_scores = [float(parts[2]), float(parts[3])]
+    start_time = time.time(); processed_count = 0
+    log_interval = 500 
+    logging.info("开始并行处理...")
+
+    # 3. 将预加载的 geo_data 传递给工作进程
+    with multiprocessing.Pool(processes=num_workers, initializer=init_worker, initargs=(linker_template, target, libs, patch_dir, geo_data)) as pool:
+        results_iterator = pool.imap_unordered(process_line, tasks)
+
+        for i, result in enumerate(results_iterator):
+            processed_count = i + 1; line_num, status, cluster_count = result
+
+            if "Success_FileGenerated" in status: logging.info(f"第 {line_num} 行处理成功，生成了 {cluster_count} 个结构。")
+            elif "FAILED" in status: logging.warning(f"第 {line_num} 行处理失败，原因: {status}")
             
-            # 检查文件是否存在，如果不存在则跳过此任务
-            if not os.path.exists(frag1_path):
-                logging.warning(f"警告: 片段文件 '{frag1_path}' 不存在，跳过配对任务 {i+1}。")
-                continue
-            if not os.path.exists(frag2_path):
-                logging.warning(f"警告: 片段文件 '{frag2_path}' 不存在，跳过配对任务 {i+1}。")
-                continue
-
-            jobs.append((i + 1, frag1_path, frag2_path, frag_scores, target_coords_full, CONFIG))
-        except ValueError as ve:
-            logging.warning(f"警告: 解析行中的分数时出错，跳过行 {i+1}: {line.strip()} - {ve}")
-            continue
-        except Exception as e:
-            logging.error(f"错误: 解析配对列表行时发生未知错误，跳过行 {i+1}: {line.strip()} - {e}")
-            continue
-    
-    total_jobs = len(jobs)
-    if total_jobs == 0:
-        logging.error("错误: 未能从输入文件中解析出任何有效的配对任务。请检查PAIR_LIST_FILE内容。")
-        return
-
-    logging.info(f"成功解析了 {total_jobs} 个配对任务。")
-    logging.info(f"使用最多 {CONFIG['MAX_WORKERS'] or os.cpu_count()} 个并行进程。")
-    logging.info("-" * 40)
-
-    job_count = 0
-    try:
-        with open(CONFIG['COMBINED_OUTPUT_LOG'], 'w') as f_err, ProcessPoolExecutor(max_workers=CONFIG['MAX_WORKERS']) as executor:
-            future_to_job = {executor.submit(process_pair, job): job for job in jobs}
-            
-            for future in as_completed(future_to_job):
-                job_args = future_to_job[future]
-                pair_index = job_args[0]
-                job_count += 1
-                try:
-                    final_candidates_from_pair = future.result()
-                    if final_candidates_from_pair:
-                        logging.info(f"进度: {job_count}/{total_jobs} | Pair {pair_index} 成功，找到 {len(final_candidates_from_pair)} 个结果，正在写入文件...")
-                        write_fraglink_output(final_candidates_from_pair, CONFIG, job_args)
-                    else:
-                        logging.info(f"进度: {job_count}/{total_jobs} | Pair {pair_index} 完成，未找到符合要求的结果。")
-
-                except Exception:
-                    logging.error(f"!!!!!! 错误: 处理配对任务 {pair_index} 时发生严重错误 !!!!!!")
-                    traceback.print_exc(file=f_err)
-                
+            if processed_count % log_interval == 0 or processed_count == total_tasks:
                 elapsed_time = time.time() - start_time
-                avg_time_per_job = elapsed_time / job_count
-                jobs_remaining = total_jobs - job_count
-                eta_seconds = avg_time_per_job * jobs_remaining
-                
-                eta_str = format_time(eta_seconds)
-                elapsed_str = format_time(elapsed_time)
-                
-                logging.info(f"--- [进度: {job_count}/{total_jobs} | 已耗时: {elapsed_str} | 预计剩余: {eta_str}] ---")
+                speed = processed_count / elapsed_time if elapsed_time > 0 else 0
+                eta_seconds = (total_tasks - processed_count) / speed if speed > 0 else 0
+                eta_formatted = str(datetime.timedelta(seconds=int(eta_seconds)))
+                logging.info(f"进度: {processed_count}/{total_tasks} ({processed_count/total_tasks:.2%}) | 速度: {speed:.2f} 行/秒 | 剩余时间预估: {eta_formatted}")
 
-    except Exception as e:
-        logging.error(f"\n主进程发生严重错误: {e}")
-        # 确保主进程错误也写入错误日志文件
-        with open(CONFIG['COMBINED_OUTPUT_LOG'], 'a') as f_err:
-            f_err.write(f"主进程错误: {e}\n")
-            traceback.print_exc(file=f_err)
-        return
-
-    total_duration_str = format_time(time.time() - start_time)
-    logging.info("-" * 40)
-    logging.info(f"--- 所有任务执行完毕！总耗时: {total_duration_str} ---")
+    end_time = time.time()
+    total_duration = str(datetime.timedelta(seconds=int(end_time - start_time)))
+    logging.info(f"所有任务处理完成！总耗时: {total_duration}")
 
 if __name__ == "__main__":
-    # 确保 logging 模块在 main() 内部配置
-    # 这样可以确保命令行参数被解析后才设置日志文件
+    multiprocessing.freeze_support()
     main()
